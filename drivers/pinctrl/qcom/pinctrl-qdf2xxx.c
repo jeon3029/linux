@@ -52,7 +52,7 @@ static int qdf2xxx_pinctrl_probe(struct platform_device *pdev)
 	}
 
 	/* The number of GPIOs in the approved list */
-	ret = device_property_read_u8_array(&pdev->dev, "gpios", NULL, 0);
+	ret = device_property_count_u8(&pdev->dev, "gpios");
 	if (ret < 0) {
 		dev_err(&pdev->dev, "missing 'gpios' property\n");
 		return ret;
@@ -90,17 +90,17 @@ static int qdf2xxx_pinctrl_probe(struct platform_device *pdev)
 	 */
 	for (i = 0; i < num_gpios; i++) {
 		pins[i].number = i;
-		groups[i].pins = &pins[i].number;
+		groups[i].grp.pins = &pins[i].number;
 	}
 
 	/* Populate the entries that are meant to be exposed as GPIOs. */
 	for (i = 0; i < avail_gpios; i++) {
 		unsigned int gpio = gpios[i];
 
-		groups[gpio].npins = 1;
+		groups[gpio].grp.npins = 1;
 		snprintf(names[i], NAME_SIZE, "gpio%u", gpio);
 		pins[gpio].name = names[i];
-		groups[gpio].name = names[i];
+		groups[gpio].grp.name = names[i];
 
 		groups[gpio].ctl_reg = 0x10000 * gpio;
 		groups[gpio].io_reg = 0x04 + 0x10000 * gpio;
@@ -142,10 +142,10 @@ MODULE_DEVICE_TABLE(acpi, qdf2xxx_acpi_ids);
 static struct platform_driver qdf2xxx_pinctrl_driver = {
 	.driver = {
 		.name = "qdf2xxx-pinctrl",
-		.acpi_match_table = ACPI_PTR(qdf2xxx_acpi_ids),
+		.acpi_match_table = qdf2xxx_acpi_ids,
 	},
 	.probe = qdf2xxx_pinctrl_probe,
-	.remove = msm_pinctrl_remove,
+	.remove_new = msm_pinctrl_remove,
 };
 
 static int __init qdf2xxx_pinctrl_init(void)

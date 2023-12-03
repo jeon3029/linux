@@ -5,9 +5,13 @@ panfrost-y := \
 	panfrost_device.o \
 	panfrost_devfreq.o \
 	panfrost_gem.o \
+	panfrost_gem_shrinker.o \
 	panfrost_gpu.o \
 	panfrost_job.o \
 	panfrost_mmu.o \
-	panfrost_perfcnt.o
+	panfrost_perfcnt.o \
+	panfrost_dump.o
+
+panfrost-$(CONFIG_DEBUG_FS) += panfrost_debugfs.o
 
 obj-$(CONFIG_DRM_PANFROST) += panfrost.o

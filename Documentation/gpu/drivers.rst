@@ -4,14 +4,12 @@ GPU Driver Documentation
 
 .. toctree::
 
-   amdgpu
-   amdgpu-dc
+   amdgpu/index
    i915
    mcde
    meson
    pl111
    tegra
-   tinydrm
    tve200
    v3d
    vc4
@@ -20,6 +18,7 @@ GPU Driver Documentation
    xen-front
    afbc
    komeda-kms
+   panfrost
 
 .. only::  subproject and html
 

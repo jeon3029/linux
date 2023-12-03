@@ -10,8 +10,8 @@
 #include <linux/jiffies.h>
 #include <linux/mutex.h>
 #include <linux/workqueue.h>
+#include <linux/greybus.h>
 
-#include "greybus.h"
 #include "firmware.h"
 
 /* Timeout, in jiffies, within which the next request must be received */
@@ -490,8 +490,6 @@ err_free_bootrom:
 static void gb_bootrom_disconnect(struct gb_bundle *bundle)
 {
 	struct gb_bootrom *bootrom = greybus_get_drvdata(bundle);
-
-	dev_dbg(&bundle->dev, "%s\n", __func__);
 
 	gb_connection_disable(bootrom->connection);
 

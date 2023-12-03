@@ -21,7 +21,7 @@
  *      r25 contains the kernel current task ptr
  *  - Defined Stack Switching Macro to be reused in all intr/excp hdlrs
  *  - Shaved off 11 instructions from RESTORE_ALL_INT1 by using the
- *      address Write back load ld.ab instead of seperate ld/add instn
+ *      address Write back load ld.ab instead of separate ld/add instn
  *
  * Amit Bhor, Sameer Dhavale: Codito Technologies 2004
  */
@@ -32,10 +32,6 @@
 #include <asm/asm-offsets.h>
 #include <asm/irqflags-compact.h>
 #include <asm/thread_info.h>	/* For THREAD_SIZE */
-
-#ifdef CONFIG_ARC_PLAT_EZNPS
-#include <plat/ctop.h>
-#endif
 
 /*--------------------------------------------------------------
  * Switch to Kernel Mode stack if SP points to User Mode stack
@@ -130,19 +126,11 @@
  * to be saved again on kernel mode stack, as part of pt_regs.
  *-------------------------------------------------------------*/
 .macro PROLOG_FREEUP_REG	reg, mem
-#ifdef CONFIG_SMP
-	sr  \reg, [ARC_REG_SCRATCH_DATA0]
-#else
 	st  \reg, [\mem]
-#endif
 .endm
 
 .macro PROLOG_RESTORE_REG	reg, mem
-#ifdef CONFIG_SMP
-	lr  \reg, [ARC_REG_SCRATCH_DATA0]
-#else
 	ld  \reg, [\mem]
-#endif
 .endm
 
 /*--------------------------------------------------------------
@@ -152,7 +140,7 @@
  *
  * After this it is safe to call the "C" handlers
  *-------------------------------------------------------------*/
-.macro EXCEPTION_PROLOGUE
+.macro EXCEPTION_PROLOGUE_KEEP_AE
 
 	/* Need at least 1 reg to code the early exception prologue */
 	PROLOG_FREEUP_REG r9, @ex_saved_reg1
@@ -162,14 +150,6 @@
 
 	/* ARC700 doesn't provide auto-stack switching */
 	SWITCH_TO_KERNEL_STK
-
-#ifdef CONFIG_ARC_CURR_IN_REG
-	/* Treat r25 as scratch reg (save on stack) and load with "current" */
-	PUSH    r25
-	GET_CURR_TASK_ON_CPU   r25
-#else
-	sub     sp, sp, 4
-#endif
 
 	st.a	r0, [sp, -8]    /* orig_r0 needed for syscall (skip ECR slot) */
 	sub	sp, sp, 4	/* skip pt_regs->sp, already saved above */
@@ -189,14 +169,24 @@
 	PUSHAX	lp_start
 	PUSHAX	erbta
 
-#ifdef CONFIG_ARC_PLAT_EZNPS
-	.word CTOP_INST_SCHD_RW
-	PUSHAX  CTOP_AUX_GPA1
-	PUSHAX  CTOP_AUX_EFLAGS
-#endif
-
 	lr	r10, [ecr]
-	st      r10, [sp, PT_event]    /* EV_Trap expects r10 to have ECR */
+	st      r10, [sp, PT_event]
+
+#ifdef CONFIG_ARC_CURR_IN_REG
+	/* gp already saved on stack: now load with "current" */
+	GET_CURR_TASK_ON_CPU   gp
+#endif
+	; OUTPUT: r10 has ECR expected by EV_Trap
+.endm
+
+.macro EXCEPTION_PROLOGUE
+
+	EXCEPTION_PROLOGUE_KEEP_AE	; return ECR in r10
+
+	lr  r0, [efa]
+	mov r1, sp
+
+	FAKE_RET_FROM_EXCPN		; clobbers r9
 .endm
 
 /*--------------------------------------------------------------
@@ -211,11 +201,6 @@
  * by hardware and that is not good.
  *-------------------------------------------------------------*/
 .macro EXCEPTION_EPILOGUE
-#ifdef CONFIG_ARC_PLAT_EZNPS
-	.word CTOP_INST_SCHD_RW
-	POPAX   CTOP_AUX_EFLAGS
-	POPAX   CTOP_AUX_GPA1
-#endif
 
 	POPAX	erbta
 	POPAX	lp_start
@@ -231,11 +216,8 @@
 	POP	gp
 	RESTORE_R12_TO_R0
 
-#ifdef CONFIG_ARC_CURR_IN_REG
-	ld	r25, [sp, 12]
-#endif
 	ld  sp, [sp] /* restore original sp */
-	/* orig_r0, ECR, user_r25 skipped automatically */
+	/* orig_r0, ECR skipped automatically */
 .endm
 
 /* Dummy ECR values for Interrupts */
@@ -252,13 +234,6 @@
 
 	SWITCH_TO_KERNEL_STK
 
-#ifdef CONFIG_ARC_CURR_IN_REG
-	/* Treat r25 as scratch reg (save on stack) and load with "current" */
-	PUSH    r25
-	GET_CURR_TASK_ON_CPU   r25
-#else
-	sub     sp, sp, 4
-#endif
 
 	PUSH	0x003\LVL\()abcd    /* Dummy ECR */
 	sub	sp, sp, 8	    /* skip orig_r0 (not needed)
@@ -278,10 +253,9 @@
 	PUSHAX	lp_start
 	PUSHAX	bta_l\LVL\()
 
-#ifdef CONFIG_ARC_PLAT_EZNPS
-	.word CTOP_INST_SCHD_RW
-	PUSHAX  CTOP_AUX_GPA1
-	PUSHAX  CTOP_AUX_EFLAGS
+#ifdef CONFIG_ARC_CURR_IN_REG
+	/* gp already saved on stack: now load with "current" */
+	GET_CURR_TASK_ON_CPU   gp
 #endif
 .endm
 
@@ -295,11 +269,6 @@
  * by hardware and that is not good.
  *-------------------------------------------------------------*/
 .macro INTERRUPT_EPILOGUE  LVL
-#ifdef CONFIG_ARC_PLAT_EZNPS
-	.word CTOP_INST_SCHD_RW
-	POPAX   CTOP_AUX_EFLAGS
-	POPAX   CTOP_AUX_GPA1
-#endif
 
 	POPAX	bta_l\LVL\()
 	POPAX	lp_start
@@ -315,11 +284,7 @@
 	POP	gp
 	RESTORE_R12_TO_R0
 
-#ifdef CONFIG_ARC_CURR_IN_REG
-	ld	r25, [sp, 12]
-#endif
-	ld  sp, [sp] /* restore original sp */
-	/* orig_r0, ECR, user_r25 skipped automatically */
+	ld  sp, [sp] /* restore original sp; orig_r0, ECR skipped implicitly */
 .endm
 
 /* Get thread_info of "current" tsk */
@@ -327,13 +292,11 @@
 	bic \reg, sp, (THREAD_SIZE - 1)
 .endm
 
-#ifndef CONFIG_ARC_PLAT_EZNPS
 /* Get CPU-ID of this core */
 .macro  GET_CPU_ID  reg
 	lr  \reg, [identity]
 	lsr \reg, \reg, 8
 	bmsk \reg, \reg, 7
 .endm
-#endif
 
 #endif  /* __ASM_ARC_ENTRY_COMPACT_H */

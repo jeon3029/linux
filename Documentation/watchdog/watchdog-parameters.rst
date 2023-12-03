@@ -301,15 +301,6 @@ ixp4xx_wdt:
 
 -------------------------------------------------
 
-ks8695_wdt:
-    wdt_time:
-	Watchdog time in seconds. (default=5)
-    nowayout:
-	Watchdog cannot be stopped once started
-	(default=kernel config parameter)
-
--------------------------------------------------
-
 machzwd:
     nowayout:
 	Watchdog cannot be stopped once started
@@ -375,16 +366,6 @@ nic7018_wdt:
 
 -------------------------------------------------
 
-nuc900_wdt:
-    heartbeat:
-	Watchdog heartbeats in seconds.
-	(default = 15)
-    nowayout:
-	Watchdog cannot be stopped once started
-	(default=kernel config parameter)
-
--------------------------------------------------
-
 omap_wdt:
     timer_margin:
 	initial watchdog timeout (in seconds)
@@ -441,6 +422,18 @@ pnx833x_wdt:
 	(default=kernel config parameter)
     start_enabled:
 	Watchdog is started on module insertion (default=1)
+
+-------------------------------------------------
+
+pseries-wdt:
+    action:
+	Action taken when watchdog expires: 0 (power off), 1 (restart),
+	2 (dump and restart). (default=1)
+    timeout:
+	Initial watchdog timeout in seconds. (default=60)
+    nowayout:
+	Watchdog cannot be stopped once started.
+	(default=kernel config parameter)
 
 -------------------------------------------------
 

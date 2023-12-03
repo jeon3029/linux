@@ -294,7 +294,7 @@ static struct b43_pio_txqueue *select_queue_by_priority(struct b43_wldev *dev,
 		switch (queue_prio) {
 		default:
 			B43_WARN_ON(1);
-			/* fallthrough */
+			fallthrough;
 		case 0:
 			q = dev->pio.tx_queue_AC_VO;
 			break;
@@ -582,7 +582,7 @@ void b43_pio_handle_txstatus(struct b43_wldev *dev,
 	q->buffer_used -= total_len;
 	q->free_packet_slots += 1;
 
-	ieee80211_tx_status(dev->wl->hw, pack->skb);
+	ieee80211_tx_status_skb(dev->wl->hw, pack->skb);
 	pack->skb = NULL;
 	list_add(&pack->list, &q->packets_list);
 
@@ -765,7 +765,7 @@ void b43_pio_rx(struct b43_pio_rxqueue *q)
 	bool stop;
 
 	while (1) {
-		stop = (pio_rx_frame(q) == 0);
+		stop = !pio_rx_frame(q);
 		if (stop)
 			break;
 		cond_resched();

@@ -14,7 +14,8 @@
 #include <linux/hw_random.h>
 
 #include <linux/of.h>
-#include <linux/of_device.h>
+#include <linux/platform_device.h>
+#include <linux/property.h>
 
 #include <asm/hypervisor.h>
 
@@ -695,20 +696,15 @@ static void n2rng_driver_version(void)
 static const struct of_device_id n2rng_match[];
 static int n2rng_probe(struct platform_device *op)
 {
-	const struct of_device_id *match;
 	int err = -ENOMEM;
 	struct n2rng *np;
-
-	match = of_match_device(n2rng_match, &op->dev);
-	if (!match)
-		return -EINVAL;
 
 	n2rng_driver_version();
 	np = devm_kzalloc(&op->dev, sizeof(*np), GFP_KERNEL);
 	if (!np)
 		goto out;
 	np->op = op;
-	np->data = (struct n2rng_template *)match->data;
+	np->data = (struct n2rng_template *)device_get_match_data(&op->dev);
 
 	INIT_DELAYED_WORK(&np->work, n2rng_work);
 
@@ -768,7 +764,7 @@ static int n2rng_probe(struct platform_device *op)
 	np->hwrng.data_read = n2rng_data_read;
 	np->hwrng.priv = (unsigned long) np;
 
-	err = hwrng_register(&np->hwrng);
+	err = devm_hwrng_register(&op->dev, &np->hwrng);
 	if (err)
 		goto out_hvapi_unregister;
 
@@ -792,8 +788,6 @@ static int n2rng_remove(struct platform_device *op)
 	np->flags |= N2RNG_FLAG_SHUTDOWN;
 
 	cancel_delayed_work_sync(&np->work);
-
-	hwrng_unregister(&np->hwrng);
 
 	sun4v_hvapi_unregister(HV_GRP_RNG);
 

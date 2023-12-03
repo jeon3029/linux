@@ -22,7 +22,7 @@
 
 #include "xc4000.h"
 #include "tuner-i2c.h"
-#include "tuner-xc2028-types.h"
+#include "xc2028-types.h"
 
 static int debug;
 module_param(debug, int, 0644);
@@ -282,15 +282,13 @@ static int xc4000_tuner_reset(struct dvb_frontend *fe)
 static int xc_write_reg(struct xc4000_priv *priv, u16 regAddr, u16 i2cData)
 {
 	u8 buf[4];
-	int result;
 
 	buf[0] = (regAddr >> 8) & 0xFF;
 	buf[1] = regAddr & 0xFF;
 	buf[2] = (i2cData >> 8) & 0xFF;
 	buf[3] = i2cData & 0xFF;
-	result = xc_send_i2c_data(priv, buf, 4);
 
-	return result;
+	return xc_send_i2c_data(priv, buf, 4);
 }
 
 static int xc_load_i2c_sequence(struct dvb_frontend *fe, const u8 *i2c_sequence)
@@ -812,7 +810,7 @@ static int xc4000_fwupload(struct dvb_frontend *fe)
 			goto corrupt;
 		}
 
-		priv->firm[n].ptr = kzalloc(size, GFP_KERNEL);
+		priv->firm[n].ptr = kmemdup(p, size, GFP_KERNEL);
 		if (priv->firm[n].ptr == NULL) {
 			printk(KERN_ERR "Not enough memory to load firmware file.\n");
 			rc = -ENOMEM;
@@ -826,7 +824,6 @@ static int xc4000_fwupload(struct dvb_frontend *fe)
 			       type, (unsigned long long)id, size);
 		}
 
-		memcpy(priv->firm[n].ptr, p, size);
 		priv->firm[n].type = type;
 		priv->firm[n].id   = id;
 		priv->firm[n].size = size;
@@ -1745,7 +1742,7 @@ fail2:
 	xc4000_release(fe);
 	return NULL;
 }
-EXPORT_SYMBOL(xc4000_attach);
+EXPORT_SYMBOL_GPL(xc4000_attach);
 
 MODULE_AUTHOR("Steven Toth, Davide Ferri");
 MODULE_DESCRIPTION("Xceive xc4000 silicon tuner driver");

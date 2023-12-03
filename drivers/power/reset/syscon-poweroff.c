@@ -6,13 +6,11 @@
  * Author: Moritz Fischer <moritz.fischer@ettus.com>
  */
 
-#include <linux/kallsyms.h>
 #include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/notifier.h>
 #include <linux/mfd/syscon.h>
-#include <linux/of_address.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/regmap.h>
@@ -34,24 +32,27 @@ static void syscon_poweroff(void)
 
 static int syscon_poweroff_probe(struct platform_device *pdev)
 {
-	char symname[KSYM_NAME_LEN];
+	struct device *dev = &pdev->dev;
 	int mask_err, value_err;
 
-	map = syscon_regmap_lookup_by_phandle(pdev->dev.of_node, "regmap");
+	map = syscon_regmap_lookup_by_phandle(dev->of_node, "regmap");
 	if (IS_ERR(map)) {
-		dev_err(&pdev->dev, "unable to get syscon");
-		return PTR_ERR(map);
+		map = syscon_node_to_regmap(dev->parent->of_node);
+		if (IS_ERR(map)) {
+			dev_err(dev, "unable to get syscon");
+			return PTR_ERR(map);
+		}
 	}
 
-	if (of_property_read_u32(pdev->dev.of_node, "offset", &offset)) {
-		dev_err(&pdev->dev, "unable to read 'offset'");
+	if (of_property_read_u32(dev->of_node, "offset", &offset)) {
+		dev_err(dev, "unable to read 'offset'");
 		return -EINVAL;
 	}
 
-	value_err = of_property_read_u32(pdev->dev.of_node, "value", &value);
-	mask_err = of_property_read_u32(pdev->dev.of_node, "mask", &mask);
+	value_err = of_property_read_u32(dev->of_node, "value", &value);
+	mask_err = of_property_read_u32(dev->of_node, "mask", &mask);
 	if (value_err && mask_err) {
-		dev_err(&pdev->dev, "unable to read 'value' and 'mask'");
+		dev_err(dev, "unable to read 'value' and 'mask'");
 		return -EINVAL;
 	}
 
@@ -65,10 +66,8 @@ static int syscon_poweroff_probe(struct platform_device *pdev)
 	}
 
 	if (pm_power_off) {
-		lookup_symbol_name((ulong)pm_power_off, symname);
-		dev_err(&pdev->dev,
-		"pm_power_off already claimed %p %s",
-		pm_power_off, symname);
+		dev_err(dev, "pm_power_off already claimed for %ps",
+			pm_power_off);
 		return -EBUSY;
 	}
 
@@ -98,9 +97,4 @@ static struct platform_driver syscon_poweroff_driver = {
 		.of_match_table = syscon_poweroff_of_match,
 	},
 };
-
-static int __init syscon_poweroff_register(void)
-{
-	return platform_driver_register(&syscon_poweroff_driver);
-}
-device_initcall(syscon_poweroff_register);
+builtin_platform_driver(syscon_poweroff_driver);

@@ -14,7 +14,6 @@
 #include "../rtl8192c/phy_common.h"
 #include "hw.h"
 #include "rf.h"
-#include "sw.h"
 #include "trx.h"
 #include "led.h"
 
@@ -65,7 +64,7 @@ static void rtl92c_init_aspm_vars(struct ieee80211_hw *hw)
 	rtlpci->const_support_pciaspm = rtlpriv->cfg->mod_params->aspm_support;
 }
 
-int rtl92c_init_sw_vars(struct ieee80211_hw *hw)
+static int rtl92c_init_sw_vars(struct ieee80211_hw *hw)
 {
 	int err;
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
@@ -113,8 +112,6 @@ int rtl92c_init_sw_vars(struct ieee80211_hw *hw)
 	rtlpriv->psc.inactiveps = rtlpriv->cfg->mod_params->inactiveps;
 	rtlpriv->psc.swctrl_lps = rtlpriv->cfg->mod_params->swctrl_lps;
 	rtlpriv->psc.fwctrl_lps = rtlpriv->cfg->mod_params->fwctrl_lps;
-	rtlpriv->cfg->mod_params->sw_crypto =
-		rtlpriv->cfg->mod_params->sw_crypto;
 	if (!rtlpriv->psc.inactiveps)
 		pr_info("rtl8192ce: Power Save off (module option)\n");
 	if (!rtlpriv->psc.fwctrl_lps)
@@ -163,7 +160,7 @@ int rtl92c_init_sw_vars(struct ieee80211_hw *hw)
 	return 0;
 }
 
-void rtl92c_deinit_sw_vars(struct ieee80211_hw *hw)
+static void rtl92c_deinit_sw_vars(struct ieee80211_hw *hw)
 {
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
 
@@ -210,7 +207,6 @@ static struct rtl_hal_ops rtl8192ce_hal_ops = {
 	.tx_polling = rtl92ce_tx_polling,
 	.enable_hw_sec = rtl92ce_enable_hw_security_config,
 	.set_key = rtl92ce_set_key,
-	.init_sw_leds = rtl92ce_init_sw_leds,
 	.get_bbreg = rtl92c_phy_query_bb_reg,
 	.set_bbreg = rtl92c_phy_set_bb_reg,
 	.set_rfreg = rtl92ce_phy_set_rf_reg,

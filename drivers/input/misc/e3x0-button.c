@@ -35,7 +35,7 @@ static irqreturn_t e3x0_button_press_handler(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
-static int __maybe_unused e3x0_button_suspend(struct device *dev)
+static int e3x0_button_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 
@@ -45,7 +45,7 @@ static int __maybe_unused e3x0_button_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused e3x0_button_resume(struct device *dev)
+static int e3x0_button_resume(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 
@@ -55,8 +55,8 @@ static int __maybe_unused e3x0_button_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(e3x0_button_pm_ops,
-			 e3x0_button_suspend, e3x0_button_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(e3x0_button_pm_ops,
+				e3x0_button_suspend, e3x0_button_resume);
 
 static int e3x0_button_probe(struct platform_device *pdev)
 {
@@ -65,18 +65,12 @@ static int e3x0_button_probe(struct platform_device *pdev)
 	int error;
 
 	irq_press = platform_get_irq_byname(pdev, "press");
-	if (irq_press < 0) {
-		dev_err(&pdev->dev, "No IRQ for 'press', error=%d\n",
-			irq_press);
+	if (irq_press < 0)
 		return irq_press;
-	}
 
 	irq_release = platform_get_irq_byname(pdev, "release");
-	if (irq_release < 0) {
-		dev_err(&pdev->dev, "No IRQ for 'release', error=%d\n",
-			irq_release);
+	if (irq_release < 0)
 		return irq_release;
-	}
 
 	input = devm_input_allocate_device(&pdev->dev);
 	if (!input)
@@ -128,7 +122,7 @@ static struct platform_driver e3x0_button_driver = {
 	.driver		= {
 		.name	= "e3x0-button",
 		.of_match_table = of_match_ptr(e3x0_button_match),
-		.pm	= &e3x0_button_pm_ops,
+		.pm	= pm_sleep_ptr(&e3x0_button_pm_ops),
 	},
 	.probe		= e3x0_button_probe,
 };

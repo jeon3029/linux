@@ -8,12 +8,14 @@
 #include <linux/kfifo.h>
 #include <linux/io.h>
 #include <linux/workqueue.h>
-#include <drm/drmP.h>
+
+#include <drm/drm_device.h>
+#include <drm/drm_mm.h>
 
 struct armada_crtc;
 struct armada_gem_object;
 struct clk;
-struct drm_fb_helper;
+struct drm_display_mode;
 
 static inline void
 armada_updatel(uint32_t val, uint32_t mask, void __iomem *ptr)
@@ -52,7 +54,6 @@ extern const struct armada_variant armada510_ops;
 
 struct armada_private {
 	struct drm_device	drm;
-	struct drm_fb_helper	*fbdev;
 	struct armada_crtc	*dcrtc[2];
 	struct drm_mm		linear; /* protected by linear_lock */
 	struct mutex		linear_lock;
@@ -70,8 +71,14 @@ struct armada_private {
 #endif
 };
 
-int armada_fbdev_init(struct drm_device *);
-void armada_fbdev_fini(struct drm_device *);
+#define drm_to_armada_dev(dev) container_of(dev, struct armada_private, drm)
+
+#if defined(CONFIG_DRM_FBDEV_EMULATION)
+void armada_fbdev_setup(struct drm_device *dev);
+#else
+static inline void armada_fbdev_setup(struct drm_device *dev)
+{ }
+#endif
 
 int armada_overlay_plane_create(struct drm_device *, unsigned long);
 

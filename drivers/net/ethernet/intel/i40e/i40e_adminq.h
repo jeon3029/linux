@@ -4,8 +4,8 @@
 #ifndef _I40E_ADMINQ_H_
 #define _I40E_ADMINQ_H_
 
-#include "i40e_osdep.h"
-#include "i40e_status.h"
+#include <linux/mutex.h>
+#include "i40e_alloc.h"
 #include "i40e_adminq_cmd.h"
 
 #define I40E_ADMINQ_DESC(R, i)   \
@@ -85,8 +85,8 @@ struct i40e_adminq_info {
 
 /**
  * i40e_aq_rc_to_posix - convert errors to user-land codes
- * aq_ret: AdminQ handler error code can override aq_rc
- * aq_rc: AdminQ firmware error code to convert
+ * @aq_ret: AdminQ handler error code can override aq_rc
+ * @aq_rc: AdminQ firmware error code to convert
  **/
 static inline int i40e_aq_rc_to_posix(int aq_ret, int aq_rc)
 {
@@ -117,7 +117,7 @@ static inline int i40e_aq_rc_to_posix(int aq_ret, int aq_rc)
 	};
 
 	/* aq_rc is invalid if AQ timed out */
-	if (aq_ret == I40E_ERR_ADMIN_QUEUE_TIMEOUT)
+	if (aq_ret == -EIO)
 		return -EAGAIN;
 
 	if (!((u32)aq_rc < (sizeof(aq_to_posix) / sizeof((aq_to_posix)[0]))))

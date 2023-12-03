@@ -21,6 +21,13 @@
 #include <linux/pm_opp.h>
 #include <linux/slab.h>
 
+static const struct of_device_id __maybe_unused armada_8k_cpufreq_of_match[] = {
+	{ .compatible = "marvell,ap806-cpu-clock" },
+	{ .compatible = "marvell,ap807-cpu-clock" },
+	{ },
+};
+MODULE_DEVICE_TABLE(of, armada_8k_cpufreq_of_match);
+
 /*
  * Setup the opps list with the divider for the max frequency, that
  * will be filled at runtime.
@@ -127,7 +134,8 @@ static int __init armada_8k_cpufreq_init(void)
 	struct device_node *node;
 	struct cpumask cpus;
 
-	node = of_find_compatible_node(NULL, NULL, "marvell,ap806-cpu-clock");
+	node = of_find_matching_node_and_match(NULL, armada_8k_cpufreq_of_match,
+					       NULL);
 	if (!node || !of_device_is_available(node)) {
 		of_node_put(node);
 		return -ENODEV;
@@ -136,6 +144,8 @@ static int __init armada_8k_cpufreq_init(void)
 
 	nb_cpus = num_possible_cpus();
 	freq_tables = kcalloc(nb_cpus, sizeof(*freq_tables), GFP_KERNEL);
+	if (!freq_tables)
+		return -ENOMEM;
 	cpumask_copy(&cpus, cpu_possible_mask);
 
 	/*

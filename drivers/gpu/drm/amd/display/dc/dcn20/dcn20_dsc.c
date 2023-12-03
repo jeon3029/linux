@@ -23,36 +23,33 @@
  *
  */
 
-#ifdef CONFIG_DRM_AMD_DC_DSC_SUPPORT
+#include <drm/display/drm_dsc_helper.h>
+
 #include "reg_helper.h"
 #include "dcn20_dsc.h"
 #include "dsc/dscc_types.h"
+#include "dsc/rc_calc.h"
 
-static void dsc_log_pps(struct display_stream_compressor *dsc, struct drm_dsc_config *pps);
-static bool dsc_prepare_config(struct display_stream_compressor *dsc, const struct dsc_config *dsc_cfg,
-			struct dsc_optc_config *dsc_optc_cfg);
-static void dsc_init_reg_values(struct dsc_reg_values *reg_vals);
-static void dsc_update_from_dsc_parameters(struct dsc_reg_values *reg_vals, const struct dsc_parameters *dsc_params);
 static void dsc_write_to_registers(struct display_stream_compressor *dsc, const struct dsc_reg_values *reg_vals);
-static enum dsc_pixel_format dsc_dc_pixel_encoding_to_dsc_pixel_format(enum dc_pixel_encoding dc_pix_enc, bool is_ycbcr422_simple);
-static enum dsc_bits_per_comp dsc_dc_color_depth_to_dsc_bits_per_comp(enum dc_color_depth);
 
 /* Object I/F functions */
-static void dsc2_get_enc_caps(struct dsc_enc_caps *dsc_enc_caps, int pixel_clock_100Hz);
 static void dsc2_read_state(struct display_stream_compressor *dsc, struct dcn_dsc_state *s);
 static bool dsc2_validate_stream(struct display_stream_compressor *dsc, const struct dsc_config *dsc_cfg);
 static void dsc2_set_config(struct display_stream_compressor *dsc, const struct dsc_config *dsc_cfg,
-		struct dsc_optc_config *dsc_optc_cfg, uint8_t *dsc_packed_pps);
+		struct dsc_optc_config *dsc_optc_cfg);
 static void dsc2_enable(struct display_stream_compressor *dsc, int opp_pipe);
 static void dsc2_disable(struct display_stream_compressor *dsc);
+static void dsc2_disconnect(struct display_stream_compressor *dsc);
 
-const struct dsc_funcs dcn20_dsc_funcs = {
+static const struct dsc_funcs dcn20_dsc_funcs = {
 	.dsc_get_enc_caps = dsc2_get_enc_caps,
 	.dsc_read_state = dsc2_read_state,
 	.dsc_validate_stream = dsc2_validate_stream,
 	.dsc_set_config = dsc2_set_config,
+	.dsc_get_packed_pps = dsc2_get_packed_pps,
 	.dsc_enable = dsc2_enable,
 	.dsc_disable = dsc2_disable,
+	.dsc_disconnect = dsc2_disconnect,
 };
 
 /* Macro definitios for REG_SET macros*/
@@ -102,7 +99,7 @@ void dsc2_construct(struct dcn20_dsc *dsc,
 /* This returns the capabilities for a single DSC encoder engine. Number of slices and total throughput
  * can be doubled, tripled etc. by using additional DSC engines.
  */
-static void dsc2_get_enc_caps(struct dsc_enc_caps *dsc_enc_caps, int pixel_clock_100Hz)
+void dsc2_get_enc_caps(struct dsc_enc_caps *dsc_enc_caps, int pixel_clock_100Hz)
 {
 	dsc_enc_caps->dsc_version = 0x21; /* v1.2 - DP spec defined it in reverse order and we kept it */
 
@@ -117,7 +114,7 @@ static void dsc2_get_enc_caps(struct dsc_enc_caps *dsc_enc_caps, int pixel_clock
 	dsc_enc_caps->color_formats.bits.RGB = 1;
 	dsc_enc_caps->color_formats.bits.YCBCR_444 = 1;
 	dsc_enc_caps->color_formats.bits.YCBCR_SIMPLE_422 = 1;
-	dsc_enc_caps->color_formats.bits.YCBCR_NATIVE_422 = 1;
+	dsc_enc_caps->color_formats.bits.YCBCR_NATIVE_422 = 0;
 	dsc_enc_caps->color_formats.bits.YCBCR_NATIVE_420 = 1;
 
 	dsc_enc_caps->color_depth.bits.COLOR_DEPTH_8_BPC = 1;
@@ -140,7 +137,15 @@ static void dsc2_get_enc_caps(struct dsc_enc_caps *dsc_enc_caps, int pixel_clock
 		dsc_enc_caps->max_total_throughput_mps = DCN20_MAX_DISPLAY_CLOCK_Mhz * 2;
 	}
 
-	// TODO DSC: This is actually image width limitation, not a slice width. This should be added to the criteria to use ODM.
+	/* For pixel clock bigger than a single-pipe limit needing four engines ODM 4:1, which then quardruples our
+	 * throughput and number of slices
+	 */
+	if (pixel_clock_100Hz > DCN20_MAX_PIXEL_CLOCK_Mhz*10000*2) {
+		dsc_enc_caps->slice_caps.bits.NUM_SLICES_12 = 1;
+		dsc_enc_caps->slice_caps.bits.NUM_SLICES_16 = 1;
+		dsc_enc_caps->max_total_throughput_mps = DCN20_MAX_DISPLAY_CLOCK_Mhz * 4;
+	}
+
 	dsc_enc_caps->max_slice_width = 5184; /* (including 64 overlap pixels for eDP MSO mode) */
 	dsc_enc_caps->bpp_increment_div = 16; /* 1/16th of a bit */
 }
@@ -155,53 +160,92 @@ static void dsc2_read_state(struct display_stream_compressor *dsc, struct dcn_ds
 
 	REG_GET(DSC_TOP_CONTROL, DSC_CLOCK_EN, &s->dsc_clock_en);
 	REG_GET(DSCC_PPS_CONFIG3, SLICE_WIDTH, &s->dsc_slice_width);
-	REG_GET(DSCC_PPS_CONFIG1, BITS_PER_PIXEL, &s->dsc_bytes_per_pixel);
+	REG_GET(DSCC_PPS_CONFIG1, BITS_PER_PIXEL, &s->dsc_bits_per_pixel);
+	REG_GET(DSCC_PPS_CONFIG3, SLICE_HEIGHT, &s->dsc_slice_height);
+	REG_GET(DSCC_PPS_CONFIG1, CHUNK_SIZE, &s->dsc_chunk_size);
+	REG_GET(DSCC_PPS_CONFIG2, PIC_WIDTH, &s->dsc_pic_width);
+	REG_GET(DSCC_PPS_CONFIG2, PIC_HEIGHT, &s->dsc_pic_height);
+	REG_GET(DSCC_PPS_CONFIG7, SLICE_BPG_OFFSET, &s->dsc_slice_bpg_offset);
+	REG_GET_2(DSCRM_DSC_FORWARD_CONFIG, DSCRM_DSC_FORWARD_EN, &s->dsc_fw_en,
+		DSCRM_DSC_OPP_PIPE_SOURCE, &s->dsc_opp_source);
 }
 
 
 static bool dsc2_validate_stream(struct display_stream_compressor *dsc, const struct dsc_config *dsc_cfg)
 {
 	struct dsc_optc_config dsc_optc_cfg;
+	struct dcn20_dsc *dsc20 = TO_DCN20_DSC(dsc);
 
-	if (dsc_cfg->pic_width > TO_DCN20_DSC(dsc)->max_image_width)
+	if (dsc_cfg->pic_width > dsc20->max_image_width)
 		return false;
 
-	return dsc_prepare_config(dsc, dsc_cfg, &dsc_optc_cfg);
+	return dsc_prepare_config(dsc_cfg, &dsc20->reg_vals, &dsc_optc_cfg);
 }
 
 
-static void dsc_config_log(struct display_stream_compressor *dsc,
-		const struct dsc_config *config)
+void dsc_config_log(struct display_stream_compressor *dsc, const struct dsc_config *config)
 {
-	DC_LOG_DSC("Setting DSC Config at DSC inst %d", dsc->inst);
-	DC_LOG_DSC("\n\tnum_slices_h %d\n\tnum_slices_v %d\n\tbits_per_pixel %d\n\tcolor_depth %d",
-		config->dc_dsc_cfg.num_slices_h,
-		config->dc_dsc_cfg.num_slices_v,
+	DC_LOG_DSC("\tnum_slices_h %d", config->dc_dsc_cfg.num_slices_h);
+	DC_LOG_DSC("\tnum_slices_v %d", config->dc_dsc_cfg.num_slices_v);
+	DC_LOG_DSC("\tbits_per_pixel %d (%d.%04d)",
 		config->dc_dsc_cfg.bits_per_pixel,
-		config->color_depth);
+		config->dc_dsc_cfg.bits_per_pixel / 16,
+		((config->dc_dsc_cfg.bits_per_pixel % 16) * 10000) / 16);
+	DC_LOG_DSC("\tcolor_depth %d", config->color_depth);
 }
 
 static void dsc2_set_config(struct display_stream_compressor *dsc, const struct dsc_config *dsc_cfg,
-		struct dsc_optc_config *dsc_optc_cfg, uint8_t *dsc_packed_pps)
+		struct dsc_optc_config *dsc_optc_cfg)
 {
 	bool is_config_ok;
 	struct dcn20_dsc *dsc20 = TO_DCN20_DSC(dsc);
 
+	DC_LOG_DSC("Setting DSC Config at DSC inst %d", dsc->inst);
 	dsc_config_log(dsc, dsc_cfg);
-	is_config_ok = dsc_prepare_config(dsc, dsc_cfg, dsc_optc_cfg);
+	is_config_ok = dsc_prepare_config(dsc_cfg, &dsc20->reg_vals, dsc_optc_cfg);
 	ASSERT(is_config_ok);
-	drm_dsc_pps_payload_pack((struct drm_dsc_picture_parameter_set *)dsc_packed_pps, &dsc20->reg_vals.pps);
+	DC_LOG_DSC("programming DSC Picture Parameter Set (PPS):");
 	dsc_log_pps(dsc, &dsc20->reg_vals.pps);
 	dsc_write_to_registers(dsc, &dsc20->reg_vals);
+}
+
+
+bool dsc2_get_packed_pps(struct display_stream_compressor *dsc, const struct dsc_config *dsc_cfg, uint8_t *dsc_packed_pps)
+{
+	bool is_config_ok;
+	struct dsc_reg_values dsc_reg_vals;
+	struct dsc_optc_config dsc_optc_cfg;
+
+	memset(&dsc_reg_vals, 0, sizeof(dsc_reg_vals));
+	memset(&dsc_optc_cfg, 0, sizeof(dsc_optc_cfg));
+
+	DC_LOG_DSC("Getting packed DSC PPS for DSC Config:");
+	dsc_config_log(dsc, dsc_cfg);
+	DC_LOG_DSC("DSC Picture Parameter Set (PPS):");
+	is_config_ok = dsc_prepare_config(dsc_cfg, &dsc_reg_vals, &dsc_optc_cfg);
+	ASSERT(is_config_ok);
+	drm_dsc_pps_payload_pack((struct drm_dsc_picture_parameter_set *)dsc_packed_pps, &dsc_reg_vals.pps);
+	dsc_log_pps(dsc, &dsc_reg_vals.pps);
+
+	return is_config_ok;
 }
 
 
 static void dsc2_enable(struct display_stream_compressor *dsc, int opp_pipe)
 {
 	struct dcn20_dsc *dsc20 = TO_DCN20_DSC(dsc);
+	int dsc_clock_en;
+	int dsc_fw_config;
+	int enabled_opp_pipe;
 
-	/* TODO Check if DSC alreay in use? */
-	DC_LOG_DSC("enable DSC at opp pipe %d", opp_pipe);
+	DC_LOG_DSC("enable DSC %d at opp pipe %d", dsc->inst, opp_pipe);
+
+	REG_GET(DSC_TOP_CONTROL, DSC_CLOCK_EN, &dsc_clock_en);
+	REG_GET_2(DSCRM_DSC_FORWARD_CONFIG, DSCRM_DSC_FORWARD_EN, &dsc_fw_config, DSCRM_DSC_OPP_PIPE_SOURCE, &enabled_opp_pipe);
+	if ((dsc_clock_en || dsc_fw_config) && enabled_opp_pipe != opp_pipe) {
+		DC_LOG_DSC("ERROR: DSC %d at opp pipe %d already enabled!", dsc->inst, enabled_opp_pipe);
+		ASSERT(0);
+	}
 
 	REG_UPDATE(DSC_TOP_CONTROL,
 		DSC_CLOCK_EN, 1);
@@ -215,8 +259,18 @@ static void dsc2_enable(struct display_stream_compressor *dsc, int opp_pipe)
 static void dsc2_disable(struct display_stream_compressor *dsc)
 {
 	struct dcn20_dsc *dsc20 = TO_DCN20_DSC(dsc);
+	int dsc_clock_en;
+	int dsc_fw_config;
+	int enabled_opp_pipe;
 
-	DC_LOG_DSC("disable DSC");
+	DC_LOG_DSC("disable DSC %d", dsc->inst);
+
+	REG_GET(DSC_TOP_CONTROL, DSC_CLOCK_EN, &dsc_clock_en);
+	REG_GET_2(DSCRM_DSC_FORWARD_CONFIG, DSCRM_DSC_FORWARD_EN, &dsc_fw_config, DSCRM_DSC_OPP_PIPE_SOURCE, &enabled_opp_pipe);
+	if (!dsc_clock_en || !dsc_fw_config) {
+		DC_LOG_DSC("ERROR: DSC %d at opp pipe %d already disabled!", dsc->inst, enabled_opp_pipe);
+		ASSERT(0);
+	}
 
 	REG_UPDATE(DSCRM_DSC_FORWARD_CONFIG,
 		DSCRM_DSC_FORWARD_EN, 0);
@@ -225,14 +279,22 @@ static void dsc2_disable(struct display_stream_compressor *dsc)
 		DSC_CLOCK_EN, 0);
 }
 
+static void dsc2_disconnect(struct display_stream_compressor *dsc)
+{
+	struct dcn20_dsc *dsc20 = TO_DCN20_DSC(dsc);
+
+	DC_LOG_DSC("disconnect DSC %d", dsc->inst);
+
+	REG_UPDATE(DSCRM_DSC_FORWARD_CONFIG,
+		DSCRM_DSC_FORWARD_EN, 0);
+}
 
 /* This module's internal functions */
-static void dsc_log_pps(struct display_stream_compressor *dsc, struct drm_dsc_config *pps)
+void dsc_log_pps(struct display_stream_compressor *dsc, struct drm_dsc_config *pps)
 {
 	int i;
 	int bits_per_pixel = pps->bits_per_pixel;
 
-	DC_LOG_DSC("programming DSC Picture Parameter Set (PPS):");
 	DC_LOG_DSC("\tdsc_version_major %d", pps->dsc_version_major);
 	DC_LOG_DSC("\tdsc_version_minor %d", pps->dsc_version_minor);
 	DC_LOG_DSC("\tbits_per_component %d", pps->bits_per_component);
@@ -282,12 +344,38 @@ static void dsc_log_pps(struct display_stream_compressor *dsc, struct drm_dsc_co
 	}
 }
 
-static bool dsc_prepare_config(struct display_stream_compressor *dsc, const struct dsc_config *dsc_cfg,
+void dsc_override_rc_params(struct rc_params *rc, const struct dc_dsc_rc_params_override *override)
+{
+	uint8_t i;
+
+	rc->rc_model_size = override->rc_model_size;
+	for (i = 0; i < DC_DSC_RC_BUF_THRESH_SIZE; i++)
+		rc->rc_buf_thresh[i] = override->rc_buf_thresh[i];
+	for (i = 0; i < DC_DSC_QP_SET_SIZE; i++) {
+		rc->qp_min[i] = override->rc_minqp[i];
+		rc->qp_max[i] = override->rc_maxqp[i];
+		rc->ofs[i] = override->rc_offset[i];
+	}
+
+	rc->rc_tgt_offset_hi = override->rc_tgt_offset_hi;
+	rc->rc_tgt_offset_lo = override->rc_tgt_offset_lo;
+	rc->rc_edge_factor = override->rc_edge_factor;
+	rc->rc_quant_incr_limit0 = override->rc_quant_incr_limit0;
+	rc->rc_quant_incr_limit1 = override->rc_quant_incr_limit1;
+
+	rc->initial_fullness_offset = override->initial_fullness_offset;
+	rc->initial_xmit_delay = override->initial_delay;
+
+	rc->flatness_min_qp = override->flatness_min_qp;
+	rc->flatness_max_qp = override->flatness_max_qp;
+	rc->flatness_det_thresh = override->flatness_det_thresh;
+}
+
+bool dsc_prepare_config(const struct dsc_config *dsc_cfg, struct dsc_reg_values *dsc_reg_vals,
 			struct dsc_optc_config *dsc_optc_cfg)
 {
 	struct dsc_parameters dsc_params;
-
-	struct dcn20_dsc *dsc20 = TO_DCN20_DSC(dsc);
+	struct rc_params rc;
 
 	/* Validate input parameters */
 	ASSERT(dsc_cfg->dc_dsc_cfg.num_slices_h);
@@ -302,7 +390,7 @@ static bool dsc_prepare_config(struct display_stream_compressor *dsc, const stru
 		    dsc_cfg->dc_dsc_cfg.linebuf_depth == 0)));
 	ASSERT(96 <= dsc_cfg->dc_dsc_cfg.bits_per_pixel && dsc_cfg->dc_dsc_cfg.bits_per_pixel <= 0x3ff); // 6.0 <= bits_per_pixel <= 63.9375
 
-	if (!dsc_cfg->dc_dsc_cfg.num_slices_v || !dsc_cfg->dc_dsc_cfg.num_slices_v ||
+	if (!dsc_cfg->dc_dsc_cfg.num_slices_v || !dsc_cfg->dc_dsc_cfg.num_slices_h ||
 		!(dsc_cfg->dc_dsc_cfg.version_minor == 1 || dsc_cfg->dc_dsc_cfg.version_minor == 2) ||
 		!dsc_cfg->pic_width || !dsc_cfg->pic_height ||
 		!((dsc_cfg->dc_dsc_cfg.version_minor == 1 && // v1.1 line buffer depth range:
@@ -315,60 +403,66 @@ static bool dsc_prepare_config(struct display_stream_compressor *dsc, const stru
 		return false;
 	}
 
-	dsc_init_reg_values(&dsc20->reg_vals);
+	dsc_init_reg_values(dsc_reg_vals);
 
 	/* Copy input config */
-	dsc20->reg_vals.pixel_format = dsc_dc_pixel_encoding_to_dsc_pixel_format(dsc_cfg->pixel_encoding, dsc_cfg->dc_dsc_cfg.ycbcr422_simple);
-	dsc20->reg_vals.num_slices_h = dsc_cfg->dc_dsc_cfg.num_slices_h;
-	dsc20->reg_vals.num_slices_v = dsc_cfg->dc_dsc_cfg.num_slices_v;
-	dsc20->reg_vals.pps.dsc_version_minor = dsc_cfg->dc_dsc_cfg.version_minor;
-	dsc20->reg_vals.pps.pic_width = dsc_cfg->pic_width;
-	dsc20->reg_vals.pps.pic_height = dsc_cfg->pic_height;
-	dsc20->reg_vals.pps.bits_per_component = dsc_dc_color_depth_to_dsc_bits_per_comp(dsc_cfg->color_depth);
-	dsc20->reg_vals.pps.block_pred_enable = dsc_cfg->dc_dsc_cfg.block_pred_enable;
-	dsc20->reg_vals.pps.line_buf_depth = dsc_cfg->dc_dsc_cfg.linebuf_depth;
-	dsc20->reg_vals.alternate_ich_encoding_en = dsc20->reg_vals.pps.dsc_version_minor == 1 ? 0 : 1;
+	dsc_reg_vals->pixel_format = dsc_dc_pixel_encoding_to_dsc_pixel_format(dsc_cfg->pixel_encoding, dsc_cfg->dc_dsc_cfg.ycbcr422_simple);
+	dsc_reg_vals->num_slices_h = dsc_cfg->dc_dsc_cfg.num_slices_h;
+	dsc_reg_vals->num_slices_v = dsc_cfg->dc_dsc_cfg.num_slices_v;
+	dsc_reg_vals->pps.dsc_version_minor = dsc_cfg->dc_dsc_cfg.version_minor;
+	dsc_reg_vals->pps.pic_width = dsc_cfg->pic_width;
+	dsc_reg_vals->pps.pic_height = dsc_cfg->pic_height;
+	dsc_reg_vals->pps.bits_per_component = dsc_dc_color_depth_to_dsc_bits_per_comp(dsc_cfg->color_depth);
+	dsc_reg_vals->pps.block_pred_enable = dsc_cfg->dc_dsc_cfg.block_pred_enable;
+	dsc_reg_vals->pps.line_buf_depth = dsc_cfg->dc_dsc_cfg.linebuf_depth;
+	dsc_reg_vals->alternate_ich_encoding_en = dsc_reg_vals->pps.dsc_version_minor == 1 ? 0 : 1;
+	dsc_reg_vals->ich_reset_at_eol = (dsc_cfg->is_odm || dsc_reg_vals->num_slices_h > 1) ? 0xF : 0;
 
 	// TODO: in addition to validating slice height (pic height must be divisible by slice height),
 	// see what happens when the same condition doesn't apply for slice_width/pic_width.
-	dsc20->reg_vals.pps.slice_width = dsc_cfg->pic_width / dsc_cfg->dc_dsc_cfg.num_slices_h;
-	dsc20->reg_vals.pps.slice_height = dsc_cfg->pic_height / dsc_cfg->dc_dsc_cfg.num_slices_v;
+	dsc_reg_vals->pps.slice_width = dsc_cfg->pic_width / dsc_cfg->dc_dsc_cfg.num_slices_h;
+	dsc_reg_vals->pps.slice_height = dsc_cfg->pic_height / dsc_cfg->dc_dsc_cfg.num_slices_v;
 
-	ASSERT(dsc20->reg_vals.pps.slice_height * dsc_cfg->dc_dsc_cfg.num_slices_v == dsc_cfg->pic_height);
-	if (!(dsc20->reg_vals.pps.slice_height * dsc_cfg->dc_dsc_cfg.num_slices_v == dsc_cfg->pic_height)) {
+	ASSERT(dsc_reg_vals->pps.slice_height * dsc_cfg->dc_dsc_cfg.num_slices_v == dsc_cfg->pic_height);
+	if (!(dsc_reg_vals->pps.slice_height * dsc_cfg->dc_dsc_cfg.num_slices_v == dsc_cfg->pic_height)) {
 		dm_output_to_console("%s: pix height %d not divisible by num_slices_v %d\n\n", __func__, dsc_cfg->pic_height, dsc_cfg->dc_dsc_cfg.num_slices_v);
 		return false;
 	}
 
-	dsc20->reg_vals.bpp_x32 = dsc_cfg->dc_dsc_cfg.bits_per_pixel << 1;
-	if (dsc20->reg_vals.pixel_format == DSC_PIXFMT_NATIVE_YCBCR420 || dsc20->reg_vals.pixel_format == DSC_PIXFMT_NATIVE_YCBCR422)
-		dsc20->reg_vals.pps.bits_per_pixel = dsc20->reg_vals.bpp_x32;
+	dsc_reg_vals->bpp_x32 = dsc_cfg->dc_dsc_cfg.bits_per_pixel << 1;
+	if (dsc_reg_vals->pixel_format == DSC_PIXFMT_NATIVE_YCBCR420 || dsc_reg_vals->pixel_format == DSC_PIXFMT_NATIVE_YCBCR422)
+		dsc_reg_vals->pps.bits_per_pixel = dsc_reg_vals->bpp_x32;
 	else
-		dsc20->reg_vals.pps.bits_per_pixel = dsc20->reg_vals.bpp_x32 >> 1;
+		dsc_reg_vals->pps.bits_per_pixel = dsc_reg_vals->bpp_x32 >> 1;
 
-	dsc20->reg_vals.pps.convert_rgb = dsc20->reg_vals.pixel_format == DSC_PIXFMT_RGB ? 1 : 0;
-	dsc20->reg_vals.pps.native_422 = (dsc20->reg_vals.pixel_format == DSC_PIXFMT_NATIVE_YCBCR422);
-	dsc20->reg_vals.pps.native_420 = (dsc20->reg_vals.pixel_format == DSC_PIXFMT_NATIVE_YCBCR420);
-	dsc20->reg_vals.pps.simple_422 = (dsc20->reg_vals.pixel_format == DSC_PIXFMT_SIMPLE_YCBCR422);
+	dsc_reg_vals->pps.convert_rgb = dsc_reg_vals->pixel_format == DSC_PIXFMT_RGB ? 1 : 0;
+	dsc_reg_vals->pps.native_422 = (dsc_reg_vals->pixel_format == DSC_PIXFMT_NATIVE_YCBCR422);
+	dsc_reg_vals->pps.native_420 = (dsc_reg_vals->pixel_format == DSC_PIXFMT_NATIVE_YCBCR420);
+	dsc_reg_vals->pps.simple_422 = (dsc_reg_vals->pixel_format == DSC_PIXFMT_SIMPLE_YCBCR422);
 
-	if (dscc_compute_dsc_parameters(&dsc20->reg_vals.pps, &dsc_params)) {
+	calc_rc_params(&rc, &dsc_reg_vals->pps);
+
+	if (dsc_cfg->dc_dsc_cfg.rc_params_ovrd)
+		dsc_override_rc_params(&rc, dsc_cfg->dc_dsc_cfg.rc_params_ovrd);
+
+	if (dscc_compute_dsc_parameters(&dsc_reg_vals->pps, &rc, &dsc_params)) {
 		dm_output_to_console("%s: DSC config failed\n", __func__);
 		return false;
 	}
 
-	dsc_update_from_dsc_parameters(&dsc20->reg_vals, &dsc_params);
+	dsc_update_from_dsc_parameters(dsc_reg_vals, &dsc_params);
 
 	dsc_optc_cfg->bytes_per_pixel = dsc_params.bytes_per_pixel;
-	dsc_optc_cfg->slice_width = dsc20->reg_vals.pps.slice_width;
-	dsc_optc_cfg->is_pixel_format_444 = dsc20->reg_vals.pixel_format == DSC_PIXFMT_RGB ||
-					dsc20->reg_vals.pixel_format == DSC_PIXFMT_YCBCR444 ||
-					dsc20->reg_vals.pixel_format == DSC_PIXFMT_SIMPLE_YCBCR422;
+	dsc_optc_cfg->slice_width = dsc_reg_vals->pps.slice_width;
+	dsc_optc_cfg->is_pixel_format_444 = dsc_reg_vals->pixel_format == DSC_PIXFMT_RGB ||
+					dsc_reg_vals->pixel_format == DSC_PIXFMT_YCBCR444 ||
+					dsc_reg_vals->pixel_format == DSC_PIXFMT_SIMPLE_YCBCR422;
 
 	return true;
 }
 
 
-static enum dsc_pixel_format dsc_dc_pixel_encoding_to_dsc_pixel_format(enum dc_pixel_encoding dc_pix_enc, bool is_ycbcr422_simple)
+enum dsc_pixel_format dsc_dc_pixel_encoding_to_dsc_pixel_format(enum dc_pixel_encoding dc_pix_enc, bool is_ycbcr422_simple)
 {
 	enum dsc_pixel_format dsc_pix_fmt = DSC_PIXFMT_UNKNOWN;
 
@@ -400,7 +494,7 @@ static enum dsc_pixel_format dsc_dc_pixel_encoding_to_dsc_pixel_format(enum dc_p
 }
 
 
-static enum dsc_bits_per_comp dsc_dc_color_depth_to_dsc_bits_per_comp(enum dc_color_depth dc_color_depth)
+enum dsc_bits_per_comp dsc_dc_color_depth_to_dsc_bits_per_comp(enum dc_color_depth dc_color_depth)
 {
 	enum dsc_bits_per_comp bpc = DSC_BPC_UNKNOWN;
 
@@ -423,9 +517,11 @@ static enum dsc_bits_per_comp dsc_dc_color_depth_to_dsc_bits_per_comp(enum dc_co
 }
 
 
-static void dsc_init_reg_values(struct dsc_reg_values *reg_vals)
+void dsc_init_reg_values(struct dsc_reg_values *reg_vals)
 {
 	int i;
+
+	memset(reg_vals, 0, sizeof(struct dsc_reg_values));
 
 	/* Non-PPS values */
 	reg_vals->dsc_clock_enable            = 1;
@@ -436,7 +532,7 @@ static void dsc_init_reg_values(struct dsc_reg_values *reg_vals)
 	reg_vals->ich_reset_at_eol            = 0;
 	reg_vals->alternate_ich_encoding_en   = 0;
 	reg_vals->rc_buffer_model_size        = 0;
-	reg_vals->disable_ich                 = 0;
+	/*reg_vals->disable_ich                 = 0;*/
 	reg_vals->dsc_dbg_en                  = 0;
 
 	for (i = 0; i < 4; i++)
@@ -477,7 +573,7 @@ static void dsc_init_reg_values(struct dsc_reg_values *reg_vals)
  * This is required because dscc_compute_dsc_parameters returns a modified PPS, which in turn
  * affects non-PPS register values.
  */
-static void dsc_update_from_dsc_parameters(struct dsc_reg_values *reg_vals, const struct dsc_parameters *dsc_params)
+void dsc_update_from_dsc_parameters(struct dsc_reg_values *reg_vals, const struct dsc_parameters *dsc_params)
 {
 	int i;
 
@@ -488,7 +584,6 @@ static void dsc_update_from_dsc_parameters(struct dsc_reg_values *reg_vals, cons
 		reg_vals->pps.rc_buf_thresh[i] = reg_vals->pps.rc_buf_thresh[i] >> 6;
 
 	reg_vals->rc_buffer_model_size = dsc_params->rc_buffer_model_size;
-	reg_vals->ich_reset_at_eol = reg_vals->num_slices_h == 1 ? 0 : 0xf;
 }
 
 static void dsc_write_to_registers(struct display_stream_compressor *dsc, const struct dsc_reg_values *reg_vals)
@@ -512,15 +607,24 @@ static void dsc_write_to_registers(struct display_stream_compressor *dsc, const 
 		PIC_HEIGHT, reg_vals->pps.pic_height);
 
 	// dscc registers
-	REG_SET_4(DSCC_CONFIG0, 0,
-		ICH_RESET_AT_END_OF_LINE, reg_vals->ich_reset_at_eol,
-		NUMBER_OF_SLICES_PER_LINE, reg_vals->num_slices_h - 1,
-		ALTERNATE_ICH_ENCODING_EN, reg_vals->alternate_ich_encoding_en,
-		NUMBER_OF_SLICES_IN_VERTICAL_DIRECTION, reg_vals->num_slices_v - 1);
+	if (dsc20->dsc_mask->ICH_RESET_AT_END_OF_LINE == 0) {
+		REG_SET_3(DSCC_CONFIG0, 0,
+			  NUMBER_OF_SLICES_PER_LINE, reg_vals->num_slices_h - 1,
+			  ALTERNATE_ICH_ENCODING_EN, reg_vals->alternate_ich_encoding_en,
+			  NUMBER_OF_SLICES_IN_VERTICAL_DIRECTION, reg_vals->num_slices_v - 1);
+	} else {
+		REG_SET_4(DSCC_CONFIG0, 0, ICH_RESET_AT_END_OF_LINE,
+			  reg_vals->ich_reset_at_eol, NUMBER_OF_SLICES_PER_LINE,
+			  reg_vals->num_slices_h - 1, ALTERNATE_ICH_ENCODING_EN,
+			  reg_vals->alternate_ich_encoding_en, NUMBER_OF_SLICES_IN_VERTICAL_DIRECTION,
+			  reg_vals->num_slices_v - 1);
+	}
 
-	REG_SET_2(DSCC_CONFIG1, 0,
+	REG_SET(DSCC_CONFIG1, 0,
+			DSCC_RATE_CONTROL_BUFFER_MODEL_SIZE, reg_vals->rc_buffer_model_size);
+	/*REG_SET_2(DSCC_CONFIG1, 0,
 		DSCC_RATE_CONTROL_BUFFER_MODEL_SIZE, reg_vals->rc_buffer_model_size,
-		DSCC_DISABLE_ICH, reg_vals->disable_ich);
+		DSCC_DISABLE_ICH, reg_vals->disable_ich);*/
 
 	REG_SET_4(DSCC_INTERRUPT_CONTROL_STATUS, 0,
 		DSCC_RATE_CONTROL_BUFFER_MODEL0_OVERFLOW_OCCURRED_INT_EN, reg_vals->rc_buffer_model_overflow_int_en[0],
@@ -672,23 +776,5 @@ static void dsc_write_to_registers(struct display_stream_compressor *dsc, const 
 		RANGE_MAX_QP14, reg_vals->pps.rc_range_params[14].range_max_qp,
 		RANGE_BPG_OFFSET14, reg_vals->pps.rc_range_params[14].range_bpg_offset);
 
-	if (IS_FPGA_MAXIMUS_DC(dsc20->base.ctx->dce_environment)) {
-		/* It's safe to do this as long as debug bus is not being used in DAL Diag environment.
-		 *
-		 * This is because DSCC_PPS_CONFIG4.INITIAL_DEC_DELAY is a read-only register field (because it's a decoder
-		 * value not required by DSC encoder). However, since decoding fails when this value is missing from PPS, it's
-		 * required to communicate this value to the PPS header. When testing on FPGA, the values for PPS header are
-		 * being read from Diag register dump. The register below is used in place of a scratch register to make
-		 * 'initial_dec_delay' available.
-		 */
-
-		temp_int = reg_vals->pps.initial_dec_delay;
-		REG_SET_4(DSCC_TEST_DEBUG_BUS_ROTATE, 0,
-			DSCC_TEST_DEBUG_BUS0_ROTATE, temp_int & 0x1f,
-			DSCC_TEST_DEBUG_BUS1_ROTATE, temp_int >> 5 & 0x1f,
-			DSCC_TEST_DEBUG_BUS2_ROTATE, temp_int >> 10 & 0x1f,
-			DSCC_TEST_DEBUG_BUS3_ROTATE, temp_int >> 15 & 0x1);
-	}
 }
 
-#endif

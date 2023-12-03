@@ -32,20 +32,35 @@
 #include <linux/export.h>
 #include <linux/kernel.h>
 #include <linux/moduleparam.h>
+#include <linux/dynamic_debug.h>
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_atomic_uapi.h>
+#include <drm/drm_bridge.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_crtc_helper.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_edid.h>
 #include <drm/drm_encoder.h>
-#include <drm/drm_fb_helper.h>
 #include <drm/drm_fourcc.h>
-#include <drm/drm_plane_helper.h>
+#include <drm/drm_framebuffer.h>
 #include <drm/drm_print.h>
 #include <drm/drm_vblank.h>
+
+#include "drm_crtc_helper_internal.h"
+
+DECLARE_DYNDBG_CLASSMAP(drm_debug_classes, DD_CLASS_TYPE_DISJOINT_BITS, 0,
+			"DRM_UT_CORE",
+			"DRM_UT_DRIVER",
+			"DRM_UT_KMS",
+			"DRM_UT_PRIME",
+			"DRM_UT_ATOMIC",
+			"DRM_UT_VBL",
+			"DRM_UT_STATE",
+			"DRM_UT_LEASE",
+			"DRM_UT_DP",
+			"DRM_UT_DRMRES");
 
 /**
  * DOC: overview
@@ -159,14 +174,10 @@ drm_encoder_disable(struct drm_encoder *encoder)
 	if (!encoder_funcs)
 		return;
 
-	drm_bridge_disable(encoder->bridge);
-
 	if (encoder_funcs->disable)
 		(*encoder_funcs->disable)(encoder);
 	else if (encoder_funcs->dpms)
 		(*encoder_funcs->dpms)(encoder, DRM_MODE_DPMS_OFF);
-
-	drm_bridge_post_disable(encoder->bridge);
 }
 
 static void __drm_helper_disable_unused_functions(struct drm_device *dev)
@@ -186,6 +197,7 @@ static void __drm_helper_disable_unused_functions(struct drm_device *dev)
 
 	drm_for_each_crtc(crtc, dev) {
 		const struct drm_crtc_helper_funcs *crtc_funcs = crtc->helper_private;
+
 		crtc->enabled = drm_helper_crtc_in_use(crtc);
 		if (!crtc->enabled) {
 			if (crtc_funcs->disable)
@@ -245,10 +257,6 @@ drm_crtc_prepare_encoders(struct drm_device *dev)
 		/* Disable unused encoders */
 		if (encoder->crtc == NULL)
 			drm_encoder_disable(encoder);
-		/* Disable encoders whose CRTC is about to change */
-		if (encoder_funcs->get_crtc &&
-		    encoder->crtc != (*encoder_funcs->get_crtc)(encoder))
-			drm_encoder_disable(encoder);
 	}
 }
 
@@ -301,15 +309,15 @@ bool drm_crtc_helper_set_mode(struct drm_crtc *crtc,
 		return false;
 	}
 
-	saved_mode = crtc->mode;
-	saved_hwmode = crtc->hwmode;
+	drm_mode_init(&saved_mode, &crtc->mode);
+	drm_mode_init(&saved_hwmode, &crtc->hwmode);
 	saved_x = crtc->x;
 	saved_y = crtc->y;
 
 	/* Update crtc values up front so the driver can rely on them for mode
 	 * setting.
 	 */
-	crtc->mode = *mode;
+	drm_mode_copy(&crtc->mode, mode);
 	crtc->x = x;
 	crtc->y = y;
 
@@ -325,13 +333,6 @@ bool drm_crtc_helper_set_mode(struct drm_crtc *crtc,
 		encoder_funcs = encoder->helper_private;
 		if (!encoder_funcs)
 			continue;
-
-		ret = drm_bridge_mode_fixup(encoder->bridge,
-			mode, adjusted_mode);
-		if (!ret) {
-			DRM_DEBUG_KMS("Bridge fixup failed\n");
-			goto done;
-		}
 
 		encoder_funcs = encoder->helper_private;
 		if (encoder_funcs->mode_fixup) {
@@ -352,7 +353,7 @@ bool drm_crtc_helper_set_mode(struct drm_crtc *crtc,
 	}
 	DRM_DEBUG_KMS("[CRTC:%d:%s]\n", crtc->base.id, crtc->name);
 
-	crtc->hwmode = *adjusted_mode;
+	drm_mode_copy(&crtc->hwmode, adjusted_mode);
 
 	/* Prepare the encoders and CRTCs before setting the mode. */
 	drm_for_each_encoder(encoder, dev) {
@@ -364,13 +365,9 @@ bool drm_crtc_helper_set_mode(struct drm_crtc *crtc,
 		if (!encoder_funcs)
 			continue;
 
-		drm_bridge_disable(encoder->bridge);
-
 		/* Disable the encoders as the first thing we do. */
 		if (encoder_funcs->prepare)
 			encoder_funcs->prepare(encoder);
-
-		drm_bridge_post_disable(encoder->bridge);
 	}
 
 	drm_crtc_prepare_encoders(dev);
@@ -397,8 +394,6 @@ bool drm_crtc_helper_set_mode(struct drm_crtc *crtc,
 			encoder->base.id, encoder->name, mode->name);
 		if (encoder_funcs->mode_set)
 			encoder_funcs->mode_set(encoder, mode, adjusted_mode);
-
-		drm_bridge_mode_set(encoder->bridge, mode, adjusted_mode);
 	}
 
 	/* Now enable the clocks, plane, pipe, and connectors that we set up. */
@@ -413,12 +408,8 @@ bool drm_crtc_helper_set_mode(struct drm_crtc *crtc,
 		if (!encoder_funcs)
 			continue;
 
-		drm_bridge_pre_enable(encoder->bridge);
-
 		if (encoder_funcs->commit)
 			encoder_funcs->commit(encoder);
-
-		drm_bridge_enable(encoder->bridge);
 	}
 
 	/* Calculate and store various constants which
@@ -432,8 +423,8 @@ done:
 	drm_mode_destroy(dev, adjusted_mode);
 	if (!ret) {
 		crtc->enabled = saved_enabled;
-		crtc->mode = saved_mode;
-		crtc->hwmode = saved_hwmode;
+		drm_mode_copy(&crtc->mode, &saved_mode);
+		drm_mode_copy(&crtc->hwmode, &saved_hwmode);
 		crtc->x = saved_x;
 		crtc->y = saved_y;
 	}
@@ -441,6 +432,32 @@ done:
 	return ret;
 }
 EXPORT_SYMBOL(drm_crtc_helper_set_mode);
+
+/**
+ * drm_crtc_helper_atomic_check() - Helper to check CRTC atomic-state
+ * @crtc: CRTC to check
+ * @state: atomic state object
+ *
+ * Provides a default CRTC-state check handler for CRTCs that only have
+ * one primary plane attached to it.
+ *
+ * This is often the case for the CRTC of simple framebuffers. See also
+ * drm_plane_helper_atomic_check() for the respective plane-state check
+ * helper function.
+ *
+ * RETURNS:
+ * Zero on success, or an errno code otherwise.
+ */
+int drm_crtc_helper_atomic_check(struct drm_crtc *crtc, struct drm_atomic_state *state)
+{
+	struct drm_crtc_state *new_crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
+
+	if (!new_crtc_state->enable)
+		return 0;
+
+	return drm_atomic_helper_check_crtc_primary_plane(new_crtc_state);
+}
+EXPORT_SYMBOL(drm_crtc_helper_atomic_check);
 
 static void
 drm_crtc_helper_disable(struct drm_crtc *crtc)
@@ -478,6 +495,22 @@ drm_crtc_helper_disable(struct drm_crtc *crtc)
 	}
 
 	__drm_helper_disable_unused_functions(dev);
+}
+
+/*
+ * For connectors that support multiple encoders, either the
+ * .atomic_best_encoder() or .best_encoder() operation must be implemented.
+ */
+struct drm_encoder *
+drm_connector_get_single_encoder(struct drm_connector *connector)
+{
+	struct drm_encoder *encoder;
+
+	WARN_ON(hweight32(connector->possible_encoders) > 1);
+	drm_connector_for_each_possible_encoder(connector, encoder)
+		return encoder;
+
+	return NULL;
 }
 
 /**
@@ -645,7 +678,11 @@ int drm_crtc_helper_set_config(struct drm_mode_set *set,
 		new_encoder = connector->encoder;
 		for (ro = 0; ro < set->num_connectors; ro++) {
 			if (set->connectors[ro] == connector) {
-				new_encoder = connector_funcs->best_encoder(connector);
+				if (connector_funcs->best_encoder)
+					new_encoder = connector_funcs->best_encoder(connector);
+				else
+					new_encoder = drm_connector_get_single_encoder(connector);
+
 				/* if we can't get an encoder for a connector
 				   we are setting now - then fail */
 				if (new_encoder == NULL)
@@ -817,25 +854,14 @@ static int drm_helper_choose_encoder_dpms(struct drm_encoder *encoder)
 /* Helper which handles bridge ordering around encoder dpms */
 static void drm_helper_encoder_dpms(struct drm_encoder *encoder, int mode)
 {
-	struct drm_bridge *bridge = encoder->bridge;
 	const struct drm_encoder_helper_funcs *encoder_funcs;
 
 	encoder_funcs = encoder->helper_private;
 	if (!encoder_funcs)
 		return;
 
-	if (mode == DRM_MODE_DPMS_ON)
-		drm_bridge_pre_enable(bridge);
-	else
-		drm_bridge_disable(bridge);
-
 	if (encoder_funcs->dpms)
 		encoder_funcs->dpms(encoder, mode);
-
-	if (mode == DRM_MODE_DPMS_ON)
-		drm_bridge_enable(bridge);
-	else
-		drm_bridge_post_disable(bridge);
 }
 
 static int drm_helper_choose_crtc_dpms(struct drm_crtc *crtc)
@@ -897,6 +923,7 @@ int drm_helper_connector_dpms(struct drm_connector *connector, int mode)
 	if (mode < old_dpms) {
 		if (crtc) {
 			const struct drm_crtc_helper_funcs *crtc_funcs = crtc->helper_private;
+
 			if (crtc_funcs->dpms)
 				(*crtc_funcs->dpms) (crtc,
 						     drm_helper_choose_crtc_dpms(crtc));
@@ -911,6 +938,7 @@ int drm_helper_connector_dpms(struct drm_connector *connector, int mode)
 			drm_helper_encoder_dpms(encoder, encoder_dpms);
 		if (crtc) {
 			const struct drm_crtc_helper_funcs *crtc_funcs = crtc->helper_private;
+
 			if (crtc_funcs->dpms)
 				(*crtc_funcs->dpms) (crtc,
 						     drm_helper_choose_crtc_dpms(crtc));

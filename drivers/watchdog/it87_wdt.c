@@ -13,9 +13,9 @@
  *		    http://www.ite.com.tw/
  *
  *	Support of the watchdog timers, which are available on
- *	IT8607, IT8620, IT8622, IT8625, IT8628, IT8655, IT8665, IT8686,
- *	IT8702, IT8712, IT8716, IT8718, IT8720, IT8721, IT8726, IT8728,
- *	and IT8783.
+ *	IT8607, IT8613, IT8620, IT8622, IT8625, IT8628, IT8655, IT8665,
+ *	IT8686, IT8702, IT8712, IT8716, IT8718, IT8720, IT8721, IT8726,
+ *	IT8728, IT8772, IT8783 and IT8784.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -50,6 +50,7 @@
 /* Chip Id numbers */
 #define NO_DEV_ID	0xffff
 #define IT8607_ID	0x8607
+#define IT8613_ID	0x8613
 #define IT8620_ID	0x8620
 #define IT8622_ID	0x8622
 #define IT8625_ID	0x8625
@@ -66,7 +67,10 @@
 #define IT8721_ID	0x8721
 #define IT8726_ID	0x8726	/* the data sheet suggest wrongly 0x8716 */
 #define IT8728_ID	0x8728
+#define IT8772_ID	0x8772
 #define IT8783_ID	0x8783
+#define IT8784_ID	0x8784
+#define IT8786_ID	0x8786
 
 /* GPIO Configuration Registers LDN=0x07 */
 #define WDTCTRL		0x71
@@ -147,14 +151,6 @@ static inline int superio_inw(int reg)
 	outb(reg, REG);
 	val |= inb(VAL);
 	return val;
-}
-
-static inline void superio_outw(int val, int reg)
-{
-	outb(reg++, REG);
-	outb(val >> 8, VAL);
-	outb(reg, REG);
-	outb(val, VAL);
 }
 
 /* Internal function, should be called after superio_select(GPIO) */
@@ -282,6 +278,7 @@ static int __init it87_wdt_init(void)
 		max_units = 65535;
 		break;
 	case IT8607_ID:
+	case IT8613_ID:
 	case IT8620_ID:
 	case IT8622_ID:
 	case IT8625_ID:
@@ -293,7 +290,10 @@ static int __init it87_wdt_init(void)
 	case IT8720_ID:
 	case IT8721_ID:
 	case IT8728_ID:
+	case IT8772_ID:
 	case IT8783_ID:
+	case IT8784_ID:
+	case IT8786_ID:
 		max_units = 65535;
 		break;
 	case IT8705_ID:

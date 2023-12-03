@@ -43,9 +43,73 @@ LED Device Naming
 
 Is currently of the form:
 
-	"devicename:colour:function"
+	"devicename:color:function"
 
-There have been calls for LED properties such as colour to be exported as
+- devicename:
+        it should refer to a unique identifier created by the kernel,
+        like e.g. phyN for network devices or inputN for input devices, rather
+        than to the hardware; the information related to the product and the bus
+        to which given device is hooked is available in sysfs and can be
+        retrieved using get_led_device_info.sh script from tools/leds; generally
+        this section is expected mostly for LEDs that are somehow associated with
+        other devices.
+
+- color:
+        one of LED_COLOR_ID_* definitions from the header
+        include/dt-bindings/leds/common.h.
+
+- function:
+        one of LED_FUNCTION_* definitions from the header
+        include/dt-bindings/leds/common.h.
+
+If required color or function is missing, please submit a patch
+to linux-leds@vger.kernel.org.
+
+It is possible that more than one LED with the same color and function will
+be required for given platform, differing only with an ordinal number.
+In this case it is preferable to just concatenate the predefined LED_FUNCTION_*
+name with required "-N" suffix in the driver. fwnode based drivers can use
+function-enumerator property for that and then the concatenation will be handled
+automatically by the LED core upon LED class device registration.
+
+LED subsystem has also a protection against name clash, that may occur
+when LED class device is created by a driver of hot-pluggable device and
+it doesn't provide unique devicename section. In this case numerical
+suffix (e.g. "_1", "_2", "_3" etc.) is added to the requested LED class
+device name.
+
+There might be still LED class drivers around using vendor or product name
+for devicename, but this approach is now deprecated as it doesn't convey
+any added value. Product information can be found in other places in sysfs
+(see tools/leds/get_led_device_info.sh).
+
+Examples of proper LED names:
+
+  - "red:disk"
+  - "white:flash"
+  - "red:indicator"
+  - "phy1:green:wlan"
+  - "phy3::wlan"
+  - ":kbd_backlight"
+  - "input5::kbd_backlight"
+  - "input3::numlock"
+  - "input3::scrolllock"
+  - "input3::capslock"
+  - "mmc1::status"
+  - "white:status"
+
+get_led_device_info.sh script can be used for verifying if the LED name
+meets the requirements pointed out here. It performs validation of the LED class
+devicename sections and gives hints on expected value for a section in case
+the validation fails for it. So far the script supports validation
+of associations between LEDs and following types of devices:
+
+        - input devices
+        - ieee80211 compliant USB devices
+
+The script is open to extensions.
+
+There have been calls for LED properties such as color to be exported as
 individual led class attributes. As a solution which doesn't incur as much
 overhead, I suggest these become part of the device name. The naming scheme
 above leaves scope for further attributes should they be needed. If sections
@@ -105,6 +169,87 @@ Setting the brightness to zero with brightness_set() callback function
 should completely turn off the LED and cancel the previously programmed
 hardware blinking function, if any.
 
+Hardware driven LEDs
+====================
+
+Some LEDs can be programmed to be driven by hardware. This is not
+limited to blink but also to turn off or on autonomously.
+To support this feature, a LED needs to implement various additional
+ops and needs to declare specific support for the supported triggers.
+
+With hw control we refer to the LED driven by hardware.
+
+LED driver must define the following value to support hw control:
+
+    - hw_control_trigger:
+               unique trigger name supported by the LED in hw control
+               mode.
+
+LED driver must implement the following API to support hw control:
+    - hw_control_is_supported:
+                check if the flags passed by the supported trigger can
+                be parsed and activate hw control on the LED.
+
+                Return 0 if the passed flags mask is supported and
+                can be set with hw_control_set().
+
+                If the passed flags mask is not supported -EOPNOTSUPP
+                must be returned, the LED trigger will use software
+                fallback in this case.
+
+                Return a negative error in case of any other error like
+                device not ready or timeouts.
+
+     - hw_control_set:
+                activate hw control. LED driver will use the provided
+                flags passed from the supported trigger, parse them to
+                a set of mode and setup the LED to be driven by hardware
+                following the requested modes.
+
+                Set LED_OFF via the brightness_set to deactivate hw control.
+
+                Return 0 on success, a negative error number on failing to
+                apply flags.
+
+    - hw_control_get:
+                get active modes from a LED already in hw control, parse
+                them and set in flags the current active flags for the
+                supported trigger.
+
+                Return 0 on success, a negative error number on failing
+                parsing the initial mode.
+                Error from this function is NOT FATAL as the device may
+                be in a not supported initial state by the attached LED
+                trigger.
+
+    - hw_control_get_device:
+                return the device associated with the LED driver in
+                hw control. A trigger might use this to match the
+                returned device from this function with a configured
+                device for the trigger as the source for blinking
+                events and correctly enable hw control.
+                (example a netdev trigger configured to blink for a
+                particular dev match the returned dev from get_device
+                to set hw control)
+
+                Returns a pointer to a struct device or NULL if nothing
+                is currently attached.
+
+LED driver can activate additional modes by default to workaround the
+impossibility of supporting each different mode on the supported trigger.
+Examples are hardcoding the blink speed to a set interval, enable special
+feature like bypassing blink if some requirements are not met.
+
+A trigger should first check if the hw control API are supported by the LED
+driver and check if the trigger is supported to verify if hw control is possible,
+use hw_control_is_supported to check if the flags are supported and only at
+the end use hw_control_set to activate hw control.
+
+A trigger can use hw_control_get to check if a LED is already in hw control
+and init their flags.
+
+When the LED is in hw control, no software blink is possible and doing so
+will effectively disable hw control.
 
 Known Issues
 ============
@@ -113,13 +258,3 @@ The LED Trigger core cannot be a module as the simple trigger functions
 would cause nightmare dependency issues. I see this as a minor issue
 compared to the benefits the simple trigger functionality brings. The
 rest of the LED subsystem can be modular.
-
-
-Future Development
-==================
-
-At the moment, a trigger can't be created specifically for a single LED.
-There are a number of cases where a trigger might only be mappable to a
-particular LED (ACPI?). The addition of triggers provided by the LED driver
-should cover this option and be possible to add without breaking the
-current interface.

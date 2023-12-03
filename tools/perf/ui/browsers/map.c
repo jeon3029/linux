@@ -5,9 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <linux/bitops.h>
-#include "../../util/util.h"
 #include "../../util/debug.h"
 #include "../../util/map.h"
+#include "../../util/dso.h"
 #include "../../util/symbol.h"
 #include "../browser.h"
 #include "../helpline.h"
@@ -76,7 +76,7 @@ static int map_browser__run(struct map_browser *browser)
 {
 	int key;
 
-	if (ui_browser__show(&browser->b, browser->map->dso->long_name,
+	if (ui_browser__show(&browser->b, map__dso(browser->map)->long_name,
 			     "Press ESC to exit, %s / to search",
 			     verbose > 0 ? "" : "restart with -v to use") < 0)
 		return -1;
@@ -106,7 +106,7 @@ int map__browse(struct map *map)
 {
 	struct map_browser mb = {
 		.b = {
-			.entries = &map->dso->symbols,
+			.entries = &map__dso(map)->symbols,
 			.refresh = ui_browser__rb_tree_refresh,
 			.seek	 = ui_browser__rb_tree_seek,
 			.write	 = map_browser__write,

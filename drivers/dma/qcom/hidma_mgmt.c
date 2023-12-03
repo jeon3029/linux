@@ -12,6 +12,8 @@
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
 #include <linux/of_platform.h>
+#include <linux/of_device.h>
+#include <linux/platform_device.h>
 #include <linux/module.h>
 #include <linux/uaccess.h>
 #include <linux/slab.h>
@@ -174,16 +176,14 @@ static int hidma_mgmt_probe(struct platform_device *pdev)
 	pm_runtime_enable(&pdev->dev);
 	pm_runtime_get_sync(&pdev->dev);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	virtaddr = devm_ioremap_resource(&pdev->dev, res);
+	virtaddr = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(virtaddr)) {
-		rc = -ENOMEM;
+		rc = PTR_ERR(virtaddr);
 		goto out;
 	}
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0) {
-		dev_err(&pdev->dev, "irq resources not found\n");
 		rc = irq;
 		goto out;
 	}
@@ -388,7 +388,6 @@ static int __init hidma_mgmt_of_populate_channels(struct device_node *np)
 			ret = PTR_ERR(new_pdev);
 			goto out;
 		}
-		of_node_get(child);
 		new_pdev->dev.of_node = child;
 		of_dma_configure(&new_pdev->dev, child, true);
 		/*
@@ -396,9 +395,14 @@ static int __init hidma_mgmt_of_populate_channels(struct device_node *np)
 		 * platforms with or without MSI support.
 		 */
 		of_msi_configure(&new_pdev->dev, child);
-		of_node_put(child);
 	}
+
+	kfree(res);
+
+	return ret;
+
 out:
+	of_node_put(child);
 	kfree(res);
 
 	return ret;
@@ -415,8 +419,23 @@ static int __init hidma_mgmt_init(void)
 		hidma_mgmt_of_populate_channels(child);
 	}
 #endif
-	return platform_driver_register(&hidma_mgmt_driver);
+	/*
+	 * We do not check for return value here, as it is assumed that
+	 * platform_driver_register must not fail. The reason for this is that
+	 * the (potential) hidma_mgmt_of_populate_channels calls above are not
+	 * cleaned up if it does fail, and to do this work is quite
+	 * complicated. In particular, various calls of of_address_to_resource,
+	 * of_irq_to_resource, platform_device_register_full, of_dma_configure,
+	 * and of_msi_configure which then call other functions and so on, must
+	 * be cleaned up - this is not a trivial exercise.
+	 *
+	 * Currently, this module is not intended to be unloaded, and there is
+	 * no module_exit function defined which does the needed cleanup. For
+	 * this reason, we have to assume success here.
+	 */
+	platform_driver_register(&hidma_mgmt_driver);
 
+	return 0;
 }
 module_init(hidma_mgmt_init);
 MODULE_LICENSE("GPL v2");

@@ -85,17 +85,9 @@ static int sp_get_irqs(struct sp_device *sp)
 	struct sp_platform *sp_platform = sp->dev_specific;
 	struct device *dev = sp->dev;
 	struct platform_device *pdev = to_platform_device(dev);
-	unsigned int i, count;
 	int ret;
 
-	for (i = 0, count = 0; i < pdev->num_resources; i++) {
-		struct resource *res = &pdev->resource[i];
-
-		if (resource_type(res) == IORESOURCE_IRQ)
-			count++;
-	}
-
-	sp_platform->irq_count = count;
+	sp_platform->irq_count = platform_irq_count(pdev);
 
 	ret = platform_get_irq(pdev, 0);
 	if (ret < 0) {
@@ -104,7 +96,7 @@ static int sp_get_irqs(struct sp_device *sp)
 	}
 
 	sp->psp_irq = ret;
-	if (count == 1) {
+	if (sp_platform->irq_count == 1) {
 		sp->ccp_irq = ret;
 	} else {
 		ret = platform_get_irq(pdev, 1);
@@ -125,7 +117,6 @@ static int sp_platform_probe(struct platform_device *pdev)
 	struct sp_platform *sp_platform;
 	struct device *dev = &pdev->dev;
 	enum dev_dma_attr attr;
-	struct resource *ior;
 	int ret;
 
 	ret = -ENOMEM;
@@ -146,8 +137,7 @@ static int sp_platform_probe(struct platform_device *pdev)
 		goto e_err;
 	}
 
-	ior = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	sp->io_map = devm_ioremap_resource(dev, ior);
+	sp->io_map = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(sp->io_map)) {
 		ret = PTR_ERR(sp->io_map);
 		goto e_err;
@@ -190,7 +180,7 @@ e_err:
 	return ret;
 }
 
-static int sp_platform_remove(struct platform_device *pdev)
+static void sp_platform_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct sp_device *sp = dev_get_drvdata(dev);
@@ -198,8 +188,6 @@ static int sp_platform_remove(struct platform_device *pdev)
 	sp_destroy(sp);
 
 	dev_notice(dev, "disabled\n");
-
-	return 0;
 }
 
 #ifdef CONFIG_PM
@@ -209,7 +197,7 @@ static int sp_platform_suspend(struct platform_device *pdev,
 	struct device *dev = &pdev->dev;
 	struct sp_device *sp = dev_get_drvdata(dev);
 
-	return sp_suspend(sp, state);
+	return sp_suspend(sp);
 }
 
 static int sp_platform_resume(struct platform_device *pdev)
@@ -232,7 +220,7 @@ static struct platform_driver sp_platform_driver = {
 #endif
 	},
 	.probe = sp_platform_probe,
-	.remove = sp_platform_remove,
+	.remove_new = sp_platform_remove,
 #ifdef CONFIG_PM
 	.suspend = sp_platform_suspend,
 	.resume = sp_platform_resume,

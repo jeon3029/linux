@@ -6,9 +6,9 @@
 
 #include <linux/of.h>
 #include <linux/platform_device.h>
-#include <linux/mfd/cros_ec.h>
-#include <linux/mfd/cros_ec_commands.h>
 #include <linux/module.h>
+#include <linux/platform_data/cros_ec_commands.h>
+#include <linux/platform_data/cros_ec_proto.h>
 #include <linux/slab.h>
 
 #define DRV_NAME "cros-ec-vbc"
@@ -17,7 +17,7 @@ static ssize_t vboot_context_read(struct file *filp, struct kobject *kobj,
 				  struct bin_attribute *att, char *buf,
 				  loff_t pos, size_t count)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
+	struct device *dev = kobj_to_dev(kobj);
 	struct cros_ec_dev *ec = to_cros_ec_dev(dev);
 	struct cros_ec_device *ecdev = ec->ec_dev;
 	struct ec_params_vbnvcontext *params;
@@ -40,7 +40,7 @@ static ssize_t vboot_context_read(struct file *filp, struct kobject *kobj,
 	msg->outsize = para_sz;
 	msg->insize = resp_sz;
 
-	err = cros_ec_cmd_xfer(ecdev, msg);
+	err = cros_ec_cmd_xfer_status(ecdev, msg);
 	if (err < 0) {
 		dev_err(dev, "Error sending read request: %d\n", err);
 		kfree(msg);
@@ -57,7 +57,7 @@ static ssize_t vboot_context_write(struct file *filp, struct kobject *kobj,
 				   struct bin_attribute *attr, char *buf,
 				   loff_t pos, size_t count)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
+	struct device *dev = kobj_to_dev(kobj);
 	struct cros_ec_dev *ec = to_cros_ec_dev(dev);
 	struct cros_ec_device *ecdev = ec->ec_dev;
 	struct ec_params_vbnvcontext *params;
@@ -83,7 +83,7 @@ static ssize_t vboot_context_write(struct file *filp, struct kobject *kobj,
 	msg->outsize = para_sz;
 	msg->insize = 0;
 
-	err = cros_ec_cmd_xfer(ecdev, msg);
+	err = cros_ec_cmd_xfer_status(ecdev, msg);
 	if (err < 0) {
 		dev_err(dev, "Error sending write request: %d\n", err);
 		kfree(msg);
@@ -101,7 +101,7 @@ static struct bin_attribute *cros_ec_vbc_bin_attrs[] = {
 	NULL
 };
 
-static struct attribute_group cros_ec_vbc_attr_group = {
+static const struct attribute_group cros_ec_vbc_attr_group = {
 	.name = "vbc",
 	.bin_attrs = cros_ec_vbc_bin_attrs,
 };
@@ -121,14 +121,12 @@ static int cros_ec_vbc_probe(struct platform_device *pd)
 	return ret;
 }
 
-static int cros_ec_vbc_remove(struct platform_device *pd)
+static void cros_ec_vbc_remove(struct platform_device *pd)
 {
 	struct cros_ec_dev *ec_dev = dev_get_drvdata(pd->dev.parent);
 
 	sysfs_remove_group(&ec_dev->class_dev.kobj,
 			   &cros_ec_vbc_attr_group);
-
-	return 0;
 }
 
 static struct platform_driver cros_ec_vbc_driver = {
@@ -136,7 +134,7 @@ static struct platform_driver cros_ec_vbc_driver = {
 		.name = DRV_NAME,
 	},
 	.probe = cros_ec_vbc_probe,
-	.remove = cros_ec_vbc_remove,
+	.remove_new = cros_ec_vbc_remove,
 };
 
 module_platform_driver(cros_ec_vbc_driver);

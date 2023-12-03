@@ -9,7 +9,7 @@
  * the OS sends a command to the EC via a write() to a char device,
  * and can read the response with a read(). The write() request is
  * verified by the driver to ensure that it is performing only one
- * of the whitelisted commands, and that no extraneous data is
+ * of the allowlisted commands, and that no extraneous data is
  * being transmitted to the EC. The response is passed directly
  * back to the reader with no modification.
  *
@@ -42,7 +42,6 @@
 #define DRV_NAME		TELEM_DEV_NAME
 #define TELEM_DEV_NAME_FMT	(TELEM_DEV_NAME "%d")
 static struct class telem_class = {
-	.owner	= THIS_MODULE,
 	.name	= TELEM_CLASS_NAME,
 };
 
@@ -59,20 +58,9 @@ static DEFINE_IDA(telem_ida);
 #define WILCO_EC_TELEM_GET_TEMP_INFO		0x95
 #define WILCO_EC_TELEM_GET_TEMP_READ		0x2C
 #define WILCO_EC_TELEM_GET_BATT_EXT_INFO	0x07
+#define WILCO_EC_TELEM_GET_BATT_PPID_INFO	0x8A
 
 #define TELEM_ARGS_SIZE_MAX	30
-
-/**
- * struct wilco_ec_telem_request - Telemetry command and arguments sent to EC.
- * @command: One of WILCO_EC_TELEM_GET_* command codes.
- * @reserved: Must be 0.
- * @args: The first N bytes are one of telem_args_get_* structs, the rest is 0.
- */
-struct wilco_ec_telem_request {
-	u8 command;
-	u8 reserved;
-	u8 args[TELEM_ARGS_SIZE_MAX];
-} __packed;
 
 /*
  * The following telem_args_get_* structs are embedded within the |args| field
@@ -122,6 +110,32 @@ struct telem_args_get_batt_ext_info {
 	u8 var_args[5];
 } __packed;
 
+struct telem_args_get_batt_ppid_info {
+	u8 always1; /* Should always be 1 */
+} __packed;
+
+/**
+ * struct wilco_ec_telem_request - Telemetry command and arguments sent to EC.
+ * @command: One of WILCO_EC_TELEM_GET_* command codes.
+ * @reserved: Must be 0.
+ * @args: The first N bytes are one of telem_args_get_* structs, the rest is 0.
+ */
+struct wilco_ec_telem_request {
+	u8 command;
+	u8 reserved;
+	union {
+		u8 buf[TELEM_ARGS_SIZE_MAX];
+		struct telem_args_get_log		get_log;
+		struct telem_args_get_version		get_version;
+		struct telem_args_get_fan_info		get_fan_info;
+		struct telem_args_get_diag_info		get_diag_info;
+		struct telem_args_get_temp_info		get_temp_info;
+		struct telem_args_get_temp_read		get_temp_read;
+		struct telem_args_get_batt_ext_info	get_batt_ext_info;
+		struct telem_args_get_batt_ppid_info	get_batt_ppid_info;
+	} args;
+} __packed;
+
 /**
  * check_telem_request() - Ensure that a request from userspace is valid.
  * @rq: Request buffer copied from userspace.
@@ -133,7 +147,7 @@ struct telem_args_get_batt_ext_info {
  * We do not want to allow userspace to send arbitrary telemetry commands to
  * the EC. Therefore we check to ensure that
  * 1. The request follows the format of struct wilco_ec_telem_request.
- * 2. The supplied command code is one of the whitelisted commands.
+ * 2. The supplied command code is one of the allowlisted commands.
  * 3. The request only contains the necessary data for the header and arguments.
  */
 static int check_telem_request(struct wilco_ec_telem_request *rq,
@@ -146,25 +160,31 @@ static int check_telem_request(struct wilco_ec_telem_request *rq,
 
 	switch (rq->command) {
 	case WILCO_EC_TELEM_GET_LOG:
-		max_size += sizeof(struct telem_args_get_log);
+		max_size += sizeof(rq->args.get_log);
 		break;
 	case WILCO_EC_TELEM_GET_VERSION:
-		max_size += sizeof(struct telem_args_get_version);
+		max_size += sizeof(rq->args.get_version);
 		break;
 	case WILCO_EC_TELEM_GET_FAN_INFO:
-		max_size += sizeof(struct telem_args_get_fan_info);
+		max_size += sizeof(rq->args.get_fan_info);
 		break;
 	case WILCO_EC_TELEM_GET_DIAG_INFO:
-		max_size += sizeof(struct telem_args_get_diag_info);
+		max_size += sizeof(rq->args.get_diag_info);
 		break;
 	case WILCO_EC_TELEM_GET_TEMP_INFO:
-		max_size += sizeof(struct telem_args_get_temp_info);
+		max_size += sizeof(rq->args.get_temp_info);
 		break;
 	case WILCO_EC_TELEM_GET_TEMP_READ:
-		max_size += sizeof(struct telem_args_get_temp_read);
+		max_size += sizeof(rq->args.get_temp_read);
 		break;
 	case WILCO_EC_TELEM_GET_BATT_EXT_INFO:
-		max_size += sizeof(struct telem_args_get_batt_ext_info);
+		max_size += sizeof(rq->args.get_batt_ext_info);
+		break;
+	case WILCO_EC_TELEM_GET_BATT_PPID_INFO:
+		if (rq->args.get_batt_ppid_info.always1 != 1)
+			return -EINVAL;
+
+		max_size += sizeof(rq->args.get_batt_ppid_info);
 		break;
 	default:
 		return -EINVAL;
@@ -235,7 +255,7 @@ static int telem_open(struct inode *inode, struct file *filp)
 	sess_data->dev_data = dev_data;
 	sess_data->has_msg = false;
 
-	nonseekable_open(inode, filp);
+	stream_open(inode, filp);
 	filp->private_data = sess_data;
 
 	return 0;
@@ -250,6 +270,7 @@ static ssize_t telem_write(struct file *filp, const char __user *buf,
 
 	if (count > sizeof(sess_data->request))
 		return -EMSGSIZE;
+	memset(&sess_data->request, 0, sizeof(sess_data->request));
 	if (copy_from_user(&sess_data->request, buf, count))
 		return -EFAULT;
 	ret = check_telem_request(&sess_data->request, count);
@@ -345,7 +366,7 @@ static int telem_device_probe(struct platform_device *pdev)
 	minor = ida_alloc_max(&telem_ida, TELEM_MAX_DEV-1, GFP_KERNEL);
 	if (minor < 0) {
 		error = minor;
-		dev_err(&pdev->dev, "Failed to find minor number: %d", error);
+		dev_err(&pdev->dev, "Failed to find minor number: %d\n", error);
 		return error;
 	}
 
@@ -379,20 +400,18 @@ static int telem_device_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int telem_device_remove(struct platform_device *pdev)
+static void telem_device_remove(struct platform_device *pdev)
 {
 	struct telem_device_data *dev_data = platform_get_drvdata(pdev);
 
 	cdev_device_del(&dev_data->cdev, &dev_data->dev);
-	put_device(&dev_data->dev);
 	ida_simple_remove(&telem_ida, MINOR(dev_data->dev.devt));
-
-	return 0;
+	put_device(&dev_data->dev);
 }
 
 static struct platform_driver telem_driver = {
 	.probe = telem_device_probe,
-	.remove = telem_device_remove,
+	.remove_new = telem_device_remove,
 	.driver = {
 		.name = DRV_NAME,
 	},
@@ -405,14 +424,14 @@ static int __init telem_module_init(void)
 
 	ret = class_register(&telem_class);
 	if (ret) {
-		pr_err(DRV_NAME ": Failed registering class: %d", ret);
+		pr_err(DRV_NAME ": Failed registering class: %d\n", ret);
 		return ret;
 	}
 
 	/* Request the kernel for device numbers, starting with minor=0 */
 	ret = alloc_chrdev_region(&dev_num, 0, TELEM_MAX_DEV, TELEM_DEV_NAME);
 	if (ret) {
-		pr_err(DRV_NAME ": Failed allocating dev numbers: %d", ret);
+		pr_err(DRV_NAME ": Failed allocating dev numbers: %d\n", ret);
 		goto destroy_class;
 	}
 	telem_major = MAJOR(dev_num);

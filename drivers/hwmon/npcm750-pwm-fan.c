@@ -629,7 +629,7 @@ static umode_t npcm7xx_is_visible(const void *data,
 	}
 }
 
-static const struct hwmon_channel_info *npcm7xx_info[] = {
+static const struct hwmon_channel_info * const npcm7xx_info[] = {
 	HWMON_CHANNEL_INFO(pwm,
 			   HWMON_PWM_INPUT,
 			   HWMON_PWM_INPUT,
@@ -875,6 +875,8 @@ static int npcm7xx_en_pwm_fan(struct device *dev,
 	data->pwm_present[pwm_port] = true;
 	ret = npcm7xx_pwm_config_set(data, pwm_port,
 				     NPCM7XX_PWM_CMR_DEFAULT_NUM);
+	if (ret)
+		return ret;
 
 	ret = of_property_count_u8_elems(child, "cooling-levels");
 	if (ret > 0) {
@@ -967,10 +969,8 @@ static int npcm7xx_pwm_fan_probe(struct platform_device *pdev)
 		spin_lock_init(&data->fan_lock[i]);
 
 		data->fan_irq[i] = platform_get_irq(pdev, i);
-		if (data->fan_irq[i] < 0) {
-			dev_err(dev, "get IRQ fan%d failed\n", i);
+		if (data->fan_irq[i] < 0)
 			return data->fan_irq[i];
-		}
 
 		sprintf(name, "NPCM7XX-FAN-MD%d", i);
 		ret = devm_request_irq(dev, data->fan_irq[i], npcm7xx_fan_isr,

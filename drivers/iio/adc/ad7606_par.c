@@ -5,6 +5,7 @@
  * Copyright 2011 Analog Devices Inc.
  */
 
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/types.h>
@@ -53,13 +54,10 @@ static int ad7606_par_probe(struct platform_device *pdev)
 	int irq;
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0) {
-		dev_err(&pdev->dev, "no irq: %d\n", irq);
+	if (irq < 0)
 		return irq;
-	}
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	addr = devm_ioremap_resource(&pdev->dev, res);
+	addr = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(addr))
 		return PTR_ERR(addr);
 
@@ -103,3 +101,4 @@ module_platform_driver(ad7606_driver);
 MODULE_AUTHOR("Michael Hennerich <michael.hennerich@analog.com>");
 MODULE_DESCRIPTION("Analog Devices AD7606 ADC");
 MODULE_LICENSE("GPL v2");
+MODULE_IMPORT_NS(IIO_AD7606);

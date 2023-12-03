@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (c) 2017, Microchip Technology Inc.
- * Author: Tudor Ambarus <tudor.ambarus@microchip.com>
+ * Author: Tudor Ambarus
  */
 
 #ifndef __ATMEL_I2C_H__
@@ -62,20 +62,8 @@ struct atmel_i2c_cmd {
 #define STATUS_NOERR			0x00
 #define STATUS_WAKE_SUCCESSFUL		0x11
 
-static const struct {
-	u8 value;
-	const char *error_text;
-} error_list[] = {
-	{ 0x01, "CheckMac or Verify miscompare" },
-	{ 0x03, "Parse Error" },
-	{ 0x05, "ECC Fault" },
-	{ 0x0F, "Execution Error" },
-	{ 0xEE, "Watchdog about to expire" },
-	{ 0xFF, "CRC or other communication error" },
-};
-
 /* Definitions for eeprom organization */
-#define CONFIG_ZONE			0
+#define CONFIGURATION_ZONE		0
 
 /* Definitions for Indexes common to all commands */
 #define RSP_DATA_IDX			1 /* buffer index of data in response */
@@ -179,12 +167,13 @@ struct atmel_i2c_work_data {
 	struct atmel_i2c_cmd cmd;
 };
 
-int atmel_i2c_probe(struct i2c_client *client, const struct i2c_device_id *id);
+int atmel_i2c_probe(struct i2c_client *client);
 
 void atmel_i2c_enqueue(struct atmel_i2c_work_data *work_data,
 		       void (*cbk)(struct atmel_i2c_work_data *work_data,
 				   void *areq, int status),
 		       void *areq);
+void atmel_i2c_flush_queue(void);
 
 int atmel_i2c_send_receive(struct i2c_client *client, struct atmel_i2c_cmd *cmd);
 
